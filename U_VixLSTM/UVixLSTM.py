@@ -349,35 +349,14 @@ class DecoderBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, scale_factor=2):
         super().__init__()
 
-        self.norm_type = "instance"
-
         self.upsample = nn.Upsample(scale_factor=scale_factor, mode='trilinear', align_corners=True)
         self.upsample1 = nn.Upsample(scale_factor=scale_factor * 2, mode='trilinear', align_corners=True)
-        if self.norm_type != "instance":
-            self.layer = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm3d(out_channels),
-                nn.ReLU(inplace=True),
-                nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm3d(out_channels),
-                nn.ReLU(inplace=True)
-            )
-        else:
-             #self.layer = nn.Sequential(
-                # nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                # nn.InstanceNorm3d(out_channels, affine = True),
-                # nn.Mish(inplace=True),
-                # nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-               #  nn.InstanceNorm3d(out_channels, affine = True),
-              #   nn.Mish(inplace=True)
-             #)#
-
-            self.layer = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                FilterResponseNorm3d(out_channels),
-                nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                FilterResponseNorm3d(out_channels)
-            )
+        self.layer = nn.Sequential(
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
+            FilterResponseNorm3d(out_channels),
+            nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
+            FilterResponseNorm3d(out_channels)
+        )
 
 
     def forward(self, x, x_concat=None):
@@ -385,51 +364,6 @@ class DecoderBottleneck(nn.Module):
             x = self.upsample1(x)
         else:
             x = self.upsample(x)
-        if x_concat is not None:
-            diffD = x_concat.size()[2] - x.size()[2]  # Depth
-            diffY = x_concat.size()[3] - x.size()[3]  # Height
-            diffX = x_concat.size()[4] - x.size()[4]  # Width
-
-            # Apply padding on each side of the last three dimensions
-            x = F.pad(x, [
-                diffX // 2, diffX - diffX // 2,  # Padding for Width
-                diffY // 2, diffY - diffY // 2,  # Padding for Height
-                diffD // 2, diffD - diffD // 2   # Padding for Depth
-            ])
-            x = torch.cat([x_concat, x], dim=1)
-
-        x = self.layer(x)
-        return x
-    
-
-class DecoderBottleneck_no_up(nn.Module):
-    def __init__(self, in_channels, out_channels, scale_factor=2):
-        super().__init__()
-
-        self.norm_type = "instance"
-
-        # self.upsample = nn.Upsample(scale_factor=scale_factor, mode='trilinear', align_corners=True)
-        # self.upsample1 = nn.Upsample(scale_factor=scale_factor * 2, mode='trilinear', align_corners=True)
-        if self.norm_type != "instance":
-            self.layer = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm3d(out_channels),
-                nn.ReLU(inplace=True),
-                nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm3d(out_channels),
-                nn.ReLU(inplace=True)
-            )
-        else:
-            self.layer = nn.Sequential(
-                nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                nn.InstanceNorm3d(out_channels, affine = True),
-                nn.Mish(inplace=True),
-                nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
-                nn.InstanceNorm3d(out_channels, affine = True),
-                nn.Mish(inplace=True)
-            )
-
-    def forward(self, x, x_concat=None):
         if x_concat is not None:
             diffD = x_concat.size()[2] - x.size()[2]  # Depth
             diffY = x_concat.size()[3] - x.size()[3]  # Height
@@ -456,7 +390,6 @@ class Decoder(nn.Module):
         self.decoder2 = DecoderBottleneck(out_channels * 4, out_channels)
         self.decoder3 = DecoderBottleneck(out_channels * 2, int(out_channels * 1 / 2))
         self.decoder4 = DecoderBottleneck(int(out_channels * 1 / 2), int(out_channels * 1 / 8))
-
         self.conv1 = nn.Conv3d(int(out_channels * 1 / 8), class_num, kernel_size=1)
 
     def forward(self, x, x1, x2, x3):
@@ -465,160 +398,7 @@ class Decoder(nn.Module):
         x = self.decoder3(x, x1)
         x = self.decoder4(x)
         x = self.conv1(x)
-
         return x
-    
-class Decoder_No_Up(nn.Module):
-    def __init__(self, out_channels, class_num):
-        super().__init__()
-
-        self.decoder1 = DecoderBottleneck_no_up(out_channels * 8, out_channels * 2)
-        self.decoder2 = DecoderBottleneck_no_up(out_channels * 4, out_channels)
-        self.decoder3 = DecoderBottleneck_no_up(out_channels * 2, int(out_channels * 1 / 2))
-        self.decoder4 = DecoderBottleneck_no_up(int(out_channels * 1 / 2), int(out_channels * 1 / 8))
-
-        self.conv1 = nn.Conv3d(int(out_channels * 1 / 8), class_num, kernel_size=1)
-
-    def forward(self, x, x1, x2, x3):
-        x = self.decoder1(x, x3)
-        x = self.decoder2(x, x2)
-        x = self.decoder3(x, x1)
-        x = self.decoder4(x)
-        x = self.conv1(x)
-
-        return x
-    
-class Decoder_Muli(nn.Module):
-    def __init__(self, out_channels, class_num):
-        super().__init__()
-
-        self.decoder1 = DecoderBottleneck(out_channels * 8, out_channels * 2)
-        self.decoder2 = DecoderBottleneck(out_channels * 4, out_channels)
-        self.decoder3 = DecoderBottleneck(out_channels * 2, int(out_channels * 1 / 2))
-        self.decoder4 = DecoderBottleneck(int(out_channels * 1 / 2), int(out_channels * 1 / 8))
-
-        self.conv1 = nn.Conv3d(int(out_channels * 1 / 8), class_num, kernel_size=1)
-        self.conv2 = nn.Conv3d(int(out_channels * 1 / 8), class_num, kernel_size=1)
-        self.conv3 = nn.Conv3d(int(out_channels * 1 / 8), class_num, kernel_size=1)
-
-    def forward(self, x, x1, x2, x3):
-        x = self.decoder1(x, x3)
-        x = self.decoder2(x, x2)
-        x = self.decoder3(x, x1)
-        x = self.decoder4(x)
-        x1 = self.conv1(x)
-        x2 = self.conv2(x)
-        x3 = self.conv3(x)
-
-        return x1, x2, x3
-    
-class SegFormerDecoderLogits(nn.Module):
-    def __init__(self, feature_dims=[32, 64, 160, 256], seq_len=8, num_bins=1, d_model=256, nhead=8, num_layers=2, dim_feedforward=512, dropout=0.1):
-        super().__init__()
-
-        # Projection layers for each feature map to d_model
-        self.proj_layers = nn.ModuleList([
-            nn.Conv3d(c, d_model, kernel_size=1) for c in feature_dims
-        ])
-
-        # Transformer decoder
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True
-        )
-        self.transformer_decoder = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=num_layers
-        )
-
-        # Learnable query tokens (seq_len, d_model)
-        self.query_tokens = nn.Parameter(torch.randn(seq_len, d_model))
-
-        # Final projection to discrete bins (0..32)
-        self.out_proj = nn.Linear(d_model, num_bins)
-
-    def forward(self, features):
-        batch_size = features[0].shape[0]
-
-        # Flatten and project each feature map
-        srcs = []
-        for feat, proj in zip(features, self.proj_layers):
-            # feat: [B, C, D, H, W] -> [B, D*H*W, d_model]
-            x = proj(feat)
-            x = x.flatten(2).transpose(1, 2)  # [B, tokens, d_model]
-            srcs.append(x)
-
-        # Concatenate all scales -> memory for transformer decoder
-        memory = torch.cat(srcs, dim=1)  # [B, total_tokens, d_model]
-
-        # Expand learnable query tokens to batch: [B, seq_len, d_model]
-        queries = self.query_tokens.unsqueeze(0).expand(batch_size, -1, -1)
-
-        # Transformer decoder
-        out = self.transformer_decoder(tgt=queries, memory=memory)  # [B, seq_len, d_model]
-
-        # Project to logits over bins
-        logits = self.out_proj(out)  # [B, seq_len, num_bins]
-
-        return logits  # use with CrossEntropyLoss per position
-    
-
-class CompactVolumeTransformer(nn.Module):
-    def __init__(self, in_channels=1, embed_dim=64, num_heads=4, num_layers=2, output_dim=8):
-        super().__init__()
-
-        # 1. Initial 3D convolutions to reduce spatial size and increase channels
-        self.conv_backbone = nn.Sequential(
-            nn.Conv3d(in_channels, embed_dim//2, kernel_size=3, stride=2, padding=1),  # halves size
-            nn.BatchNorm3d(embed_dim//2),
-            nn.ReLU(),
-            nn.Conv3d(embed_dim//2, embed_dim, kernel_size=3, stride=2, padding=1),    # halves again
-            nn.BatchNorm3d(embed_dim),
-            nn.ReLU()
-        )
-
-        # 2. Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=embed_dim*4,
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-
-        # 3. Output MLP
-        self.mlp = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim//2),
-            nn.ReLU(),
-            nn.Linear(embed_dim//2, output_dim)
-        )
-
-    def forward(self, x):
-        """
-        x: (B, C, X, Y, Z)
-        returns: (B, output_dim)
-        """
-        B, C, X, Y, Z = x.shape
-
-        # Backbone convs
-        feat = self.conv_backbone(x)  # B, embed_dim, x', y', z'
-        B, D, Xr, Yr, Zr = feat.shape
-
-        # Flatten reduced spatial dimensions to tokens
-        tokens = feat.flatten(2).transpose(1,2)  # B, N_tokens, embed_dim where N_tokens=Xr*Yr*Zr
-
-        # Transformer
-        tokens = self.transformer(tokens)  # B, N_tokens, embed_dim
-
-        # Global pooling over tokens
-        pooled = tokens.mean(dim=1)  # B, embed_dim
-
-        # Output descriptor
-        out = self.mlp(pooled)  # B, output_dim
-        return out
 
 class UVixLSTM(nn.Module):
     def __init__(self, class_num, 
@@ -631,77 +411,8 @@ class UVixLSTM(nn.Module):
         self.encoder = Encoder(img_dim, in_channels, out_channels,
                                    depth, dim)
         self.decoder = Decoder(out_channels, class_num)
-        # self.decoder2 = Decoder(out_channels, 4)
-        # self.pool = nn.MaxPool3d(kernel_size=4, stride=4)
-        # self.embed = nn.Conv3d(4, 8, kernel_size=3, stride=1, padding=1)
-        # self.inst_norm = nn.InstanceNorm3d(8)
-        # self.final_embed = nn.Conv3d(8, 32, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
         x, x1, x2, x3 = self.encoder(x)
         x_main = self.decoder(x, x1, x2, x3)
-        # x_aux = self.decoder2(x, x1, x2, x3)
-        # x_aux = self.pool(x_aux)
-        # x_aux = self.embed(x_aux)
-        # x_aux = self.inst_norm(x_aux)
-        # x_aux = self.final_embed(x_aux)
         return x_main, None
-    
-class UVixLSTM_Multi(nn.Module):
-    def __init__(self, class_num, 
-                     img_dim=96,
-                     in_channels=1,
-                     out_channels=64,
-                     depth=12,
-                     dim=256):
-        super().__init__()
-        self.encoder = Encoder(img_dim, in_channels, out_channels,
-                                   depth, dim)
-        self.decoder = Decoder_Muli(out_channels, class_num)
-
-    def forward(self, x):
-        x, x1, x2, x3 = self.encoder(x)
-        x00, x01, x02 = self.decoder(x, x1, x2, x3)
-        #x_aux = self.decoder2(x, x1, x2, x3)
-        return (x00, x01, x02), None
-
-class UVixLSTM_size(nn.Module):
-    def __init__(self, class_num, 
-                     img_dim=96,
-                     in_channels=1,
-                     out_channels=64,
-                     depth=12,
-                     dim=256):
-        super().__init__()
-
-        self.encoder = Encoder(img_dim, in_channels, out_channels,
-                                   depth, dim)
-
-        self.decoder = Decoder(out_channels, class_num)
-
-        self.pool = nn.Sequential(
-            nn.AvgPool3d(2),  # 128 -> 64
-            nn.AvgPool3d(2),  # 64 -> 32
-            nn.AvgPool3d(2),  # 32 -> 16
-            nn.AvgPool3d(2),  # 16 -> 8
-            nn.GELU()
-            )
-        self.mlp = nn.Sequential(
-        nn.Flatten(),
-        nn.LayerNorm(512),
-        nn.Linear(512, 512),
-        nn.GELU(),
-        nn.Linear(512, 8)
-        )
-
-    def forward(self, x):
-        x, x1, x2, x3 = self.encoder(x)
-            # print(x.size(), x1.size(), x2.size(), x3.size())
-        #import pdb; pdb.set_trace()
-        x_main = self.decoder(x, x1, x2, x3)
-
-        x_aux = self.pool(x_main)
-
-        x_aux = self.mlp(x_aux)
-
-        return x_aux
