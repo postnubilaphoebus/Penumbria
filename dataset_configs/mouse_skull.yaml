@@ -1,0 +1,48 @@
+label_transform:
+  high_value: 20.0
+  low_value: -20.0
+  background_maximum: -5.0
+  foreground_minimum: -2.0
+  ignore_index: -100
+
+model:
+  optimizer: sgd
+  learning_rate: 0.001
+  load_pretrained: false
+  momentum: 0.9
+  model_weights_path: "best_model.pth"
+
+training:
+  training_iterations: 100000
+  evaluation_interval: 250
+  in_channels: 1
+  data_dimensionality: 3
+  mixed_precision: true
+  dynamic_cropping: true
+  training_image_shape: [128, 128, 128]
+  val_indices: [0]
+  verbosity_flag: true
+  data_augmentation_types:
+    - rotate
+    - motion_blur
+    - gaussian_noise
+  mini_batch_size: 1
+  early_stopping_patience: 20000
+  training_folder: "./datasets/prepped_data_mouse_skull_resizing_1p00_1p00_1p00"
+  inference_folder: "./datasets/prepped_data_mouse_skull_resizing_1p00_1p00_1p00/test_image"
+  inference_resolution_upsampling: null
+
+inference:
+  test_time_augmentation: true
+  keep_size: [64, 64, 64]
+  step_size: [64, 64, 64]
+  inference_indices: null
+
+postprocessing:
+  parameter_tuning: true
+  cell_prominence: 0.4
+  cell_confidence_minimum: 0.5
+  background_threshold: 0.2
+  minimum_cell_size: 9
+  gaussian_smoothing: false
+  simple_thresholding: false

@@ -1,0 +1,48 @@
+label_transform:
+  high_value: 20.0
+  low_value: -20.0
+  background_maximum: -5.0
+  foreground_minimum: -2.0
+  ignore_index: -100
+
+model:
+  optimizer: sgd
+  learning_rate: 0.001
+  load_pretrained: false
+  momentum: 0.9
+  model_weights_path: "0_best_model.pth"
+
+training:
+  training_iterations: 6000
+  evaluation_interval: 20
+  in_channels: 1
+  data_dimensionality: 3
+  mixed_precision: true
+  dynamic_cropping: false
+  training_image_shape: [64, 64, 64]
+  val_indices: [0, 4]
+  verbosity_flag: true
+  data_augmentation_types:
+    - rotate
+    - motion_blur
+    - gaussian_noise
+  mini_batch_size: 1
+  early_stopping_patience: 8000
+  training_folder: "datasets/zebrafish_euclid"
+  inference_folder: null
+  inference_resolution_upsampling: null
+
+inference:
+  test_time_augmentation: true
+  keep_size: [32, 32, 32]
+  step_size: [32, 32, 32]
+  inference_indices: [1]
+
+postprocessing:
+  parameter_tuning: true
+  cell_prominence: 0.24
+  cell_confidence_minimum: 0.59
+  background_threshold: 0.06
+  minimum_cell_size: 9
+  gaussian_smoothing: false
+  simple_thresholding: false

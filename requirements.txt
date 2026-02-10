@@ -1,0 +1,12 @@
+numpy
+monai
+matplotlib
+pillow
+tqdm
+scipy
+scikit-image
+numba
+csbdeep
+ImageIO
+SimpleITK
+optuna
