@@ -2,7 +2,7 @@
 
 **Precision 3D segmentation for biological imaging**
 
-Penumbria is a deep learning-based tool for accurate 3D cell segmentation in microscopy images. It uses heatmap prediction followed by watershed-based instance segmentation to identify individual cells in 3D volumes.
+Penumbria is a deep learning algorithm for accurate 3D cell segmentation in microscopy images. It uses a U-vixLSTM backbone to frame segmentation as image regression over the Euclidean distance to cell boundaries, then applies morphological reconstruction and watershed transformation to generate instance labels. Penumbria excels at high-precision boundary delineation, making it ideal for analyses requiring precise morphological fidelity.
 
 ## Overview
 
