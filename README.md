@@ -135,8 +135,8 @@ model:
 - When enabled, the network samples random crops during training
 
 **`training_image_shape`**: Size of image patches used during training
-- Keep at [64, 64, 64] for most cases
-- Can go up to [128, 128, 128] if you have enough GPU memory
+- Keep at [64, 64, 64] or [128, 128, 128] for most cases
+- Can go up to [192, 192, 192] if you have enough GPU memory
 
 **`val_indices`**: Which images to use for validation (zero-indexed)
 
@@ -173,7 +173,7 @@ After training, you'll fine-tune these parameters on your validation set to opti
 
 **`simple_thresholding`**: 
 - `false`: Use morphological reconstruction (more accurate)
-- `true`: Simple thresholding (faster, use only if extremely time-constrained)
+- `true`: Simple thresholding (faster, use if extremely time-constrained)
 
 ### What You Can Ignore
 
