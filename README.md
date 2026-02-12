@@ -18,7 +18,7 @@ Penumbria works in three main steps:
 
 1. Create a conda environment:
 ```bash
-conda create -n penumbria python=3.9
+conda create -n penumbria
 conda activate penumbria
 ```
 
