@@ -1,5 +1,6 @@
+''' This file uses code from https://github.com/stardist/stardist by Uwe Schmidt, Martin Weigert, Coleman Broaddus, Gene Myers.
+Papers: 10.1109/ISBIC56247.2022.9854534, 10.1109/WACV45572.2020.9093435, 10.1007/978-3-030-00934-2_30'''
 import numpy as np
-
 from numba import jit
 from tqdm import tqdm
 from scipy.optimize import linear_sum_assignment
