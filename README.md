@@ -190,14 +190,6 @@ All other default parameters are highly optimized and rarely need adjustment.
 3. **Fine-tune**: After training completes, adjust postprocessing parameters on validation data
 4. **Segment**: Apply the model to your test images
 
-## Tips for Biologists
-
-- **Start small**: Try with a subset of your data first to make sure everything works
-- **Resolution matters**: If your images have anisotropic resolution (e.g., lower resolution in Z), use `--resizing_factors` during data preparation
-- **GPU recommended**: Training and inference are much faster with a GPU, but CPU works too
-- **Cross-validation**: Leave `inference_folder: null` and the script will automatically evaluate on held-out images
-- **Parameter tuning**: Always run postprocessing parameter tuning on your validation set for best results
-
 ## Questions?
 
 If something isn't working or you need help understanding a parameter, feel free to open an issue!
