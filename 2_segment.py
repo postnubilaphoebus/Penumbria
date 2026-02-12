@@ -552,7 +552,7 @@ def main(seed):
         best_gaussian = study.best_params['gaussian_smoothing']
         best_thresh = study.best_params['simple_thresholding']
 
-        print("best parameters: h = {}, c = {}, bg = {}, gaussian_smoothing = {}, simple_thresholding = {}, lcm = {},".\
+        print("best parameters: h = {}, c = {}, bg = {}, gaussian_smoothing = {}, simple_thresholding = {},".\
               format(besth, 
                      best_cc, 
                      best_bg, 
@@ -602,4 +602,5 @@ def main(seed):
 
 if __name__ == "__main__":
     print("running with seed {}".format(0)) 
+
     main(0)
