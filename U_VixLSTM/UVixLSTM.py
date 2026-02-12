@@ -1,3 +1,5 @@
+''' This file adapts code from U-VixLSTM by Pallabi Dutta, Soham Bose, Swalpa Kumar Roy, and Sushmita Mitra 
+URL: https://github.com/duttapallabi2907/U-VixLSTM. Paper: https://arxiv.org/abs/2406.16993'''
 import torch
 import torch.nn as nn
 from einops import rearrange
