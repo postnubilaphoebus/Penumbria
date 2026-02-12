@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-# File   : replicate.py
-# Author : Jiayuan Mao
-# Email  : maojiayuan@gmail.com
-# Date   : 27/01/2018
-# 
-# This file is part of Synchronized-BatchNorm-PyTorch.
-# https://github.com/vacancy/Synchronized-BatchNorm-PyTorch
-# Distributed under MIT License.
+# File    : replicate.py
+# Author  : Jiayuan Mao
+# Email   : maojiayuan@gmail.com
+# Original Date : 27/01/2018
+#
+# This file is adapted from the Synchronized-BatchNorm-PyTorch repository
+# (https://github.com/vacancy/Synchronized-BatchNorm-PyTorch) by Jiayuan Mao.
+# Original code distributed under the MIT License.
+#
+# Modifications may have been made for this project.
+
 
 import functools
 
