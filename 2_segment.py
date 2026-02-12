@@ -65,10 +65,9 @@ def main(seed):
     ######################################### configuration and initialization ########################################
     ###################################################################################################################
 
-    # Generally, the configurations from the .yaml files are loaded here
-    # However, you may override those using command line arguments
     # You may load a specific yaml file using the -c argument
-    # For example: python run.py -c="./dataset_configs/paryhale.yaml"
+    # For example: python 2_segment.py -c="./dataset_configs/zebrafish_confocal.yaml"
+    # However, you may override those using command line arguments
 
     # ───────────────────────────────────────────────────────────────
     # set random seeds for reproducibility
@@ -84,7 +83,7 @@ def main(seed):
     # program name
 
     parser = argparse.ArgumentParser(
-        prog='CHORA',
+        prog='Penumbria',
         description='Heatmap neural network for cell segmentation'
     )
 
@@ -604,3 +603,4 @@ if __name__ == "__main__":
     print("running with seed {}".format(0)) 
 
     main(0)
+
