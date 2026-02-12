@@ -1,5 +1,4 @@
 numpy
-monai
 matplotlib
 pillow
 tqdm
