@@ -40,9 +40,9 @@ inference:
 
 postprocessing:
   parameter_tuning: true
-  cell_prominence: 0.24
-  cell_confidence_minimum: 0.59
+  cell_prominence: 0.23
+  cell_confidence_minimum: 0.51
   background_threshold: 0.06
   minimum_cell_size: 9
-  gaussian_smoothing: false
+  gaussian_smoothing: true
   simple_thresholding: false
