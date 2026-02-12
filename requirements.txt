@@ -9,3 +9,4 @@ csbdeep
 ImageIO
 SimpleITK
 optuna
+einops
