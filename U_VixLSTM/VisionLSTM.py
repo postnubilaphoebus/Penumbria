@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
-from monai.networks.blocks import PatchEmbeddingBlock
 import einops
 from enum import Enum
 import math
