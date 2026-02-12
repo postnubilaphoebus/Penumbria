@@ -1,96 +1,67 @@
-Penumbria
+# Penumbria
 
-Precision 3D Instance Segmentation via Heatmap Learning
+**Precision 3D segmentation for biological imaging**
 
-Penumbria is a deep learning framework for high-precision 3D instance segmentation of volumetric data.
-Instead of predicting binary masks directly, the network learns to predict Euclidean distance-based heatmaps, which are then converted into instance segmentations using morphological reconstruction and watershed flooding.
+Penumbria is a deep learning-based tool for accurate 3D cell segmentation in microscopy images. It uses heatmap prediction followed by watershed-based instance segmentation to identify individual cells in 3D volumes.
 
-The method is particularly effective for separating touching objects in dense 3D volumes.
+## Overview
 
-Overview
+Penumbria works in three main steps:
 
-The workflow consists of three stages:
+1. **Data preparation**: Convert your labeled images into training-ready heatmaps using Euclidean distance transforms
+2. **Training**: Train a 3D neural network to predict cell boundaries
+3. **Segmentation**: Apply the trained model to new images and extract individual cell instances
 
-Prepare training data
+## Installation
 
-Train the heatmap network
-
-Postprocess predictions into instances
-
-Installation
-
-Create a fresh Conda environment:
-
-conda create -n penumbria python=3.10
+1. Create a conda environment:
+```bash
+conda create -n penumbria python=3.9
 conda activate penumbria
-pip install -r requirements.txt
+```
 
-
-Install PyTorch separately:
-
+2. Install PyTorch and torchvision separately (we're using PyTorch 2.5.1, but other versions should work):
+```bash
 pip install torch torchvision
+```
 
+3. Install remaining dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-Penumbria works with a wide range of PyTorch versions (tested with 2.5.1).
+## Quick Start
 
-Step 1 — Prepare Training Data
+### Step 1: Prepare Your Training Data
 
-Run:
+First, you need to convert your raw images and label masks into heatmaps that the network will learn from.
 
-python 1_prepare_training_data.py --base_path <path> --dataset_name <name>
+```bash
+python 1_prepare_training_data.py \
+  --base_path /path/to/your/data \
+  --dataset_name zebrafish \
+  --output_path prepped_data
+```
 
-Arguments
---resizing_factors        Resizing factors for up/downsampling
-                          Example: --resizing_factors=7,1,1
-                          Default: [1.0, 1.0, 1.0]
+**Arguments:**
+- `--base_path`: Directory containing your images and label masks
+- `--dataset_name`: Name for your dataset
+- `--output_path`: Where to save the prepared data (default: "prepped_data")
+- `--img_filter`: String to identify image files (default: "img")
+- `--resizing_factors`: Optional resizing factors for anisotropic data (e.g., `--resizing_factors=7,1,1`)
 
---base_path               Base path to images and masks
+This script creates Euclidean distance transform heatmaps from your labels, which serve as training targets for the network.
 
---output_path             Output folder (default: "prepped_data")
+### Step 2: Train the Network
 
---dataset_name            Dataset name
+The easiest way to train is using a configuration YAML file:
 
---img_filter              Image filter string (default: "img")
+```bash
+python 2_segment.py --config config.yaml
+```
 
-What This Step Does
-
-Organizes images and labels into a structured dataset folder
-
-Computes Euclidean Distance Transforms (EDT) from labels
-
-Saves these as target heatmaps
-
-Stores resizing factors (if used)
-
-The generated heatmaps are the regression targets for the network.
-
-Step 2 — Training and Segmentation
-
-Run:
-
-python 2_segment.py --config your_config.yaml
-
-
-Configuration is handled through a YAML file.
-
-YAML Configuration
-
-Below is a representative configuration structure:
-
-label_transform:
-  high_value: 20.0
-  low_value: -20.0
-  background_maximum: -5.0
-  foreground_minimum: -2.0
-  ignore_index: -100
-
-model:
-  optimizer: sgd
-  learning_rate: 0.001
-  load_pretrained: false
-  momentum: 0.9
-  model_weights_path: "best_model.pth"
-
+**Sample config.yaml:**
+```yaml
 training:
   training_iterations: 6000
   evaluation_interval: 20
@@ -126,181 +97,107 @@ postprocessing:
   gaussian_smoothing: true
   simple_thresholding: false
 
-Sections That Should Not Be Modified
-label_transform
+# The following sections are auto-populated and generally don't need changes:
+label_transform:
+  high_value: 20.0
+  low_value: -20.0
+  background_maximum: -5.0
+  foreground_minimum: -2.0
+  ignore_index: -100
 
-Do not change this section.
-These values are already defined during data preparation and are only read by the script for consistency.
+model:
+  optimizer: sgd
+  learning_rate: 0.001
+  load_pretrained: false
+  momentum: 0.9
+  model_weights_path: "best_model.pth"
+```
 
-model
+## Configuration Guide
 
-Only modify this section if:
+### What You'll Likely Need to Change
 
-You want to load pretrained weights
+**`training_folder`**: Path to your prepared training data
 
-You explicitly want to change optimizer settings
+**`inference_folder`**: Path to test images (leave as `null` for cross-validation)
 
-Otherwise, leave it unchanged.
+**`inference_resolution_upsampling`**: If your test images have different resolution than training images, specify the upsampling factors here (e.g., `[2, 1, 1]`)
 
-Training Guidelines
-Training Iterations
+### Training Parameters Explained
 
-If training on full images (no subsampling):
+**`training_iterations`**: How many training steps to run
+- For small datasets where entire images fit in memory: Use ~1500 iterations per training image
+  - Example: 4 training images → 6,000 iterations
+- For large datasets with big images (>128³): Use 100,000 iterations with `dynamic_cropping: true`
 
-Rule of thumb:
-~1500 iterations per training image
-(total images − validation − test)
+**`dynamic_cropping`**: Set to `true` when your images are larger than what fits in GPU memory
+- Maximum safe image size is ~128³ (192³ absolute maximum)
+- When enabled, the network samples random crops during training
 
-Example:
-4 training images → ~6000 iterations
+**`training_image_shape`**: Size of image patches used during training
+- Keep at [64, 64, 64] for most cases
+- Can go up to [128, 128, 128] if you have enough GPU memory
 
-For larger datasets or large volumes:
+**`val_indices`**: Which images to use for validation (zero-indexed)
 
-Use ~100,000 iterations
+### Inference Parameters
 
-Large Volumes and Dynamic Cropping
+**`test_time_augmentation`**: 
+- `true`: Network makes predictions on multiple augmented versions and averages them (better accuracy, slower)
+- `false`: Single prediction pass (faster, slightly lower accuracy)
+- Recommendation: Keep `true` if using GPU and reasonable dataset sizes
 
-Maximum input size is roughly:
+**`keep_size` and `step_size`**: 
+- These control sliding window inference (how the network processes large images)
+- **Best practice**: Set both to half of `training_image_shape`
+  - Example: If `training_image_shape: [64, 64, 64]`, use `keep_size: [32, 32, 32]` and `step_size: [32, 32, 32]`
+- The network predicts overlapping patches and blends them using Euclidean distance feathering
 
-~192³ (theoretical)
+### Postprocessing Parameters
 
-128³ (safer)
+After training, you'll fine-tune these parameters on your validation set to optimize cell detection.
 
-For larger images, enable:
+**`parameter_tuning`**: 
+- `false`: Use preset values below
+- `true`: Run automated parameter search on validation data (recommended)
 
-dynamic_cropping: true
+**`cell_prominence`**: Controls seed detection sensitivity (corresponds to h-dome transform height)
 
+**`cell_confidence_minimum`**: Minimum confidence score to keep a detected cell
 
-Dynamic cropping randomly samples subvolumes during training and is recommended for large 3D data.
+**`background_threshold`**: Threshold for distinguishing background from foreground
 
-training_image_shape
+**`minimum_cell_size`**: Minimum voxel count for a cell (prevents small artifacts)
 
-Defines the patch size used for training.
+**`gaussian_smoothing`**: Apply Gaussian smoothing to heatmap before processing
 
-Example:
+**`simple_thresholding`**: 
+- `false`: Use morphological reconstruction (more accurate)
+- `true`: Simple thresholding (faster, use only if extremely time-constrained)
 
-training_image_shape: [64, 64, 64]
+### What You Can Ignore
 
+**`label_transform` section**: These values are automatically set during data preparation and just read by the training script.
 
-Increase cautiously depending on GPU memory.
+**`model` section**: Only modify if you want to load a pretrained model using `load_pretrained: true` and specifying `model_weights_path`.
 
-Inference
-Test-Time Augmentation (TTA)
-test_time_augmentation: true
+All other default parameters are highly optimized and rarely need adjustment.
 
+## Typical Workflow
 
-Keep enabled if using a GPU and moderate dataset size.
+1. **Prepare data**: Run `1_prepare_training_data.py` on your images and labels
+2. **Train**: Run `2_segment.py` with your config file
+3. **Fine-tune**: After training completes, adjust postprocessing parameters on validation data
+4. **Segment**: Apply the model to your test images
 
-Disable if running on CPU or processing very large datasets.
+## Tips for Biologists
 
-Performance differences are usually modest.
+- **Start small**: Try with a subset of your data first to make sure everything works
+- **Resolution matters**: If your images have anisotropic resolution (e.g., lower resolution in Z), use `--resizing_factors` during data preparation
+- **GPU recommended**: Training and inference are much faster with a GPU, but CPU works too
+- **Cross-validation**: Leave `inference_folder: null` and the script will automatically evaluate on held-out images
+- **Parameter tuning**: Always run postprocessing parameter tuning on your validation set for best results
 
-Sliding Window Inference
+## Questions?
 
-keep_size and step_size define the sliding window parameters.
-
-Best practice:
-Set both to half of training_image_shape.
-
-Example:
-
-training_image_shape: [64,64,64]
-keep_size: [32,32,32]
-step_size: [32,32,32]
-
-
-Predictions are merged using Euclidean distance feathering.
-
-inference_folder
-
-Leave as null during cross-validation.
-
-Set to a folder path for explicit test-set inference.
-
-inference_resolution_upsampling
-
-Only use this if test images have a different resolution than training images.
-
-Example:
-
-inference_resolution_upsampling: [1,1,2]
-
-
-Otherwise leave as null.
-
-Postprocessing
-
-After predicting heatmaps, Penumbria performs:
-
-Optional Gaussian smoothing
-
-Seed detection using h-dome transform
-
-Morphological reconstruction
-
-Watershed flooding
-
-Confidence-based filtering
-
-Postprocessing Parameters
-
-These can be fine-tuned or left at preset values.
-
-Key Parameters
-
-cell_prominence
-The h parameter in the h-dome transform. Controls seed strength.
-
-cell_confidence_minimum
-Minimum confidence required to retain a detected object.
-
-background_threshold
-Separates foreground from background.
-
-minimum_cell_size
-Removes small artifacts.
-
-gaussian_smoothing
-Smooth heatmap before reconstruction (recommended).
-
-simple_thresholding
-Bypasses morphological reconstruction and applies direct thresholding.
-Use only if speed is critical.
-
-Recommended Workflow
-
-Prepare data
-
-Train the network
-
-Run on validation data
-
-Adjust postprocessing thresholds
-
-Run final inference
-
-In most cases, only the following fields need modification:
-
-training_folder
-
-inference_folder
-
-training_iterations
-
-inference_resolution_upsampling (if necessary)
-
-All other parameters are already tuned for stable performance.
-
-Summary
-
-Penumbria performs 3D instance segmentation by:
-
-Learning Euclidean distance heatmaps
-
-Detecting object centers robustly
-
-Applying morphological reconstruction
-
-Separating instances with watershed flooding
-
-This approach provides stable separation of touching objects and reliable segmentation in dense volumetric datasets.
+If something isn't working or you need help understanding a parameter, feel free to open an issue!
