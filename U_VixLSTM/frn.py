@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 # File    : filter_response_normalization.py
-# Author : tattaka
-# Email  : tattaka666@gmail.com
-# Date    : 27/11/2019 (Modified for FRN3d on 03/12/2025)
+# Author  : tattaka
+# Email   : tattaka666@gmail.com
+# Original Date : 27/11/2019
+# Modified for FRN3d : 03/12/2025
 #
-# This file is part of Filter-Response-Normalization-PyTorch
-# https://github.com/tattaka/Filter-Response-Normalization-PyTorch
-# Distributed under MIT License.
+# This file is adapted from the Filter-Response-Normalization-PyTorch repository
+# (https://github.com/tattaka/Filter-Response-Normalization-PyTorch) by tattaka.
+# Original code distributed under the MIT License.
+#
+# Modifications made for 3D FRN usage in this project.
 
 import torch
 from torch import nn
