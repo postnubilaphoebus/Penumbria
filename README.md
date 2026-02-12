@@ -6,9 +6,7 @@ Penumbria is a deep learning algorithm for accurate 3D cell segmentation in micr
 
 ## Pipeline Overview
 
-![Penumbria Pipeline](docs/pipeline.png)
-
-*[View interactive version](pipeline_visualization.html)*
+![Penumbria Pipeline](pipeline.png)
 
 Penumbria works in three main steps:
 
