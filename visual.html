@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Penumbria Pipeline</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Arial', sans-serif;
+            background: #f5f5f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .pipeline-container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            max-width: 1400px;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 40px;
+        }
+        @keyframes ripple {
+            0% {
+                opacity: 0.8;
+            }
+            50% {
+                opacity: 0.3;
+            }
+            100% {
+                opacity: 0.8;
+            }
+        }
+        .ripple {
+            animation: ripple 2s ease-in-out infinite;
+        }
+        .ripple-delay-1 {
+            animation-delay: 0.3s;
+        }
+        .ripple-delay-2 {
+            animation-delay: 0.6s;
+        }
+    </style>
+</head>
+<body>
+    <div class="pipeline-container">
+        <h1>Penumbria Segmentation Pipeline</h1>
+        <svg width="1300" height="400" viewBox="0 0 1300 400" xmlns="http://www.w3.org/2000/svg">
+            <!-- Cell Volume -->
+            <g id="cell-volume">
+                <rect x="20" y="80" width="180" height="180" fill="#e8f4f8" stroke="#4a90a4" stroke-width="2" rx="8"/>
+                <!-- 3D cell shapes -->
+                <ellipse cx="70" cy="130" rx="30" ry="40" fill="#7cb342" opacity="0.7"/>
+                <ellipse cx="130" cy="150" rx="35" ry="35" fill="#66bb6a" opacity="0.7"/>
+                <ellipse cx="90" cy="200" rx="25" ry="30" fill="#81c784" opacity="0.7"/>
+                <text x="110" y="290" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Cell Volume</text>
+                <text x="110" y="308" text-anchor="middle" font-size="12" fill="#666">(3D microscopy)</text>
+            </g>
+
+            <!-- Arrow 1 -->
+            <g id="arrow1">
+                <line x1="210" y1="170" x2="260" y2="170" stroke="#666" stroke-width="3"/>
+                <polygon points="260,170 250,165 250,175" fill="#666"/>
+            </g>
+
+            <!-- Neural Network -->
+            <g id="neural-network">
+                <rect x="270" y="80" width="180" height="180" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2" rx="8"/>
+                <!-- Network layers -->
+                <circle cx="310" cy="130" r="8" fill="#9c27b0"/>
+                <circle cx="310" cy="170" r="8" fill="#9c27b0"/>
+                <circle cx="310" cy="210" r="8" fill="#9c27b0"/>
+                
+                <circle cx="350" cy="110" r="8" fill="#ab47bc"/>
+                <circle cx="350" cy="150" r="8" fill="#ab47bc"/>
+                <circle cx="350" cy="190" r="8" fill="#ab47bc"/>
+                <circle cx="350" cy="230" r="8" fill="#ab47bc"/>
+                
+                <circle cx="390" cy="130" r="8" fill="#ba68c8"/>
+                <circle cx="390" cy="170" r="8" fill="#ba68c8"/>
+                <circle cx="390" cy="210" r="8" fill="#ba68c8"/>
+                
+                <circle cx="430" cy="170" r="8" fill="#ce93d8"/>
+                
+                <!-- Connections -->
+                <line x1="318" y1="130" x2="342" y2="110" stroke="#9c27b0" stroke-width="1" opacity="0.3"/>
+                <line x1="318" y1="130" x2="342" y2="150" stroke="#9c27b0" stroke-width="1" opacity="0.3"/>
+                <line x1="318" y1="170" x2="342" y2="150" stroke="#9c27b0" stroke-width="1" opacity="0.3"/>
+                <line x1="318" y1="170" x2="342" y2="190" stroke="#9c27b0" stroke-width="1" opacity="0.3"/>
+                <line x1="318" y1="210" x2="342" y2="190" stroke="#9c27b0" stroke-width="1" opacity="0.3"/>
+                <line x1="318" y1="210" x2="342" y2="230" stroke="#9c27b0" stroke-width="1" opacity="0.3"/>
+                
+                <line x1="358" y1="110" x2="382" y2="130" stroke="#ab47bc" stroke-width="1" opacity="0.3"/>
+                <line x1="358" y1="150" x2="382" y2="170" stroke="#ab47bc" stroke-width="1" opacity="0.3"/>
+                <line x1="358" y1="190" x2="382" y2="170" stroke="#ab47bc" stroke-width="1" opacity="0.3"/>
+                <line x1="358" y1="230" x2="382" y2="210" stroke="#ab47bc" stroke-width="1" opacity="0.3"/>
+                
+                <line x1="398" y1="130" x2="422" y2="170" stroke="#ba68c8" stroke-width="1" opacity="0.3"/>
+                <line x1="398" y1="170" x2="422" y2="170" stroke="#ba68c8" stroke-width="1" opacity="0.3"/>
+                <line x1="398" y1="210" x2="422" y2="170" stroke="#ba68c8" stroke-width="1" opacity="0.3"/>
+                
+                <text x="360" y="290" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">U-vixLSTM</text>
+                <text x="360" y="308" text-anchor="middle" font-size="12" fill="#666">(Neural Network)</text>
+            </g>
+
+            <!-- Arrow 2 -->
+            <g id="arrow2">
+                <line x1="460" y1="170" x2="510" y2="170" stroke="#666" stroke-width="3"/>
+                <polygon points="510,170 500,165 500,175" fill="#666"/>
+            </g>
+
+            <!-- Heatmap Output -->
+            <g id="heatmap">
+                <rect x="520" y="80" width="180" height="180" fill="#fff3e0" stroke="#e65100" stroke-width="2" rx="8"/>
+                <!-- Heatmap gradient effect -->
+                <defs>
+                    <radialGradient id="heat1">
+                        <stop offset="0%" style="stop-color:#ff5722;stop-opacity:0.9" />
+                        <stop offset="100%" style="stop-color:#ffccbc;stop-opacity:0.3" />
+                    </radialGradient>
+                    <radialGradient id="heat2">
+                        <stop offset="0%" style="stop-color:#ff6f00;stop-opacity:0.9" />
+                        <stop offset="100%" style="stop-color:#ffe0b2;stop-opacity:0.3" />
+                    </radialGradient>
+                    <radialGradient id="heat3">
+                        <stop offset="0%" style="stop-color:#ff9800;stop-opacity:0.9" />
+                        <stop offset="100%" style="stop-color:#fff3e0;stop-opacity:0.3" />
+                    </radialGradient>
+                </defs>
+                <circle cx="570" cy="130" r="35" fill="url(#heat1)"/>
+                <circle cx="630" cy="150" r="40" fill="url(#heat2)"/>
+                <circle cx="590" cy="200" r="30" fill="url(#heat3)"/>
+                <text x="610" y="290" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Distance Heatmap</text>
+                <text x="610" y="308" text-anchor="middle" font-size="12" fill="#666">(Euclidean transform)</text>
+            </g>
+
+            <!-- Arrow 3 -->
+            <g id="arrow3">
+                <line x1="710" y1="170" x2="760" y2="170" stroke="#666" stroke-width="3"/>
+                <polygon points="760,170 750,165 750,175" fill="#666"/>
+            </g>
+
+            <!-- Morphological Reconstruction -->
+            <g id="morphological">
+                <rect x="770" y="80" width="180" height="180" fill="#e8eaf6" stroke="#3f51b5" stroke-width="2" rx="8"/>
+                
+                <!-- Cell outlines with ripple effects inside -->
+                <!-- Cell 1 -->
+                <ellipse cx="820" cy="130" rx="32" ry="42" fill="none" stroke="#1976d2" stroke-width="2"/>
+                <ellipse cx="820" cy="130" rx="10" ry="13" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple" opacity="0.6"/>
+                <ellipse cx="820" cy="130" rx="18" ry="24" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple ripple-delay-1" opacity="0.4"/>
+                <ellipse cx="820" cy="130" rx="26" ry="34" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple ripple-delay-2" opacity="0.3"/>
+                
+                <!-- Cell 2 -->
+                <ellipse cx="880" cy="150" rx="37" ry="37" fill="none" stroke="#1976d2" stroke-width="2"/>
+                <ellipse cx="880" cy="150" rx="12" ry="12" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple" opacity="0.6"/>
+                <ellipse cx="880" cy="150" rx="22" ry="22" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple ripple-delay-1" opacity="0.4"/>
+                <ellipse cx="880" cy="150" rx="30" ry="30" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple ripple-delay-2" opacity="0.3"/>
+                
+                <!-- Cell 3 -->
+                <ellipse cx="840" cy="200" rx="27" ry="32" fill="none" stroke="#1976d2" stroke-width="2"/>
+                <ellipse cx="840" cy="200" rx="9" ry="11" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple" opacity="0.6"/>
+                <ellipse cx="840" cy="200" rx="16" ry="19" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple ripple-delay-1" opacity="0.4"/>
+                <ellipse cx="840" cy="200" rx="22" ry="26" fill="none" stroke="#5c6bc0" stroke-width="1.5" class="ripple ripple-delay-2" opacity="0.3"/>
+                
+                <!-- Seeds/markers on top -->
+                <circle cx="820" cy="130" r="6" fill="#1976d2" stroke="#0d47a1" stroke-width="2"/>
+                <circle cx="880" cy="150" r="6" fill="#1976d2" stroke="#0d47a1" stroke-width="2"/>
+                <circle cx="840" cy="200" r="6" fill="#1976d2" stroke="#0d47a1" stroke-width="2"/>
+                
+                <text x="860" y="290" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Morphological Reconstruction</text>
+                <text x="860" y="308" text-anchor="middle" font-size="12" fill="#666">(Seed detection)</text>
+            </g>
+
+            <!-- Arrow 4 -->
+            <g id="arrow4">
+                <line x1="960" y1="170" x2="1010" y2="170" stroke="#666" stroke-width="3"/>
+                <polygon points="1010,170 1000,165 1000,175" fill="#666"/>
+            </g>
+
+            <!-- Watershed -->
+            <g id="watershed">
+                <rect x="1020" y="80" width="180" height="180" fill="#e0f2f1" stroke="#00695c" stroke-width="2" rx="8"/>
+                <!-- Segmented cells with distinct colors -->
+                <ellipse cx="1070" cy="130" rx="30" ry="40" fill="#4db6ac" stroke="#00695c" stroke-width="2"/>
+                <text x="1070" y="135" text-anchor="middle" font-size="12" font-weight="bold" fill="white">1</text>
+                
+                <ellipse cx="1130" cy="150" rx="35" ry="35" fill="#26a69a" stroke="#00695c" stroke-width="2"/>
+                <text x="1130" y="155" text-anchor="middle" font-size="12" font-weight="bold" fill="white">2</text>
+                
+                <ellipse cx="1090" cy="200" rx="25" ry="30" fill="#80cbc4" stroke="#00695c" stroke-width="2"/>
+                <text x="1090" y="205" text-anchor="middle" font-size="12" font-weight="bold" fill="white">3</text>
+                
+                <text x="1110" y="290" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Watershed</text>
+                <text x="1110" y="308" text-anchor="middle" font-size="12" fill="#666">(Instance labels)</text>
+            </g>
+        </svg>
+    </div>
+</body>
+</html>
