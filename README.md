@@ -139,6 +139,7 @@ model:
 **`training_image_shape`**: Size of image patches used during training
 - Keep at [64, 64, 64] or [128, 128, 128] for most cases
 - Can go up to [192, 192, 192] if you have enough GPU memory
+- Needs to be cubic and divisible by 32 due to model architecture (U-vixLSTM)
 
 **`val_indices`**: Which images to use for validation (zero-indexed)
 
