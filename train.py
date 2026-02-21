@@ -492,6 +492,8 @@ def train_model(model,
                                 second_mask = torch.where(val_labels_intensity_torch != ignore_index, 1.0, 0.0)
                                 mask = mask * second_mask
                                 mask = mask.bool().to(device)
+                                val_loss2 = loss_fn(val_output, val_labels_intensity_torch)
+                                val_loss2 = val_loss2 * mask
                                 val_loss2 = torch.mean(val_loss2)
                                 val_loss = val_loss2 
                                 loss_sum.append(val_loss.item())
