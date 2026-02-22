@@ -138,8 +138,6 @@ def watershed_inference(prediction,
 
     # cell confidence exclusion
     slices = find_objects(wts)
-    low_confidence_locations = np.zeros(wts_shape)
-    low_confidence_index = 1
     wts_numpy_array = np.zeros_like(wts)
     idx = 1
     for i, slice_tuple in enumerate(slices, start=1):
@@ -163,61 +161,7 @@ def watershed_inference(prediction,
                     else:
                         raise ValueError(f"incorrect image shape{prediction.shape}")
                     idx += 1
-                else:
-                    low_confidence_locations[global_locs[:, 0], global_locs[:, 1], global_locs[:, 2]] = low_confidence_index
-                    low_confidence_index += 1
 
-    if low_confidence_merging:
-        radius = 3
-        for index in range(1, low_confidence_index + 1):
-
-            points = np.argwhere(low_confidence_locations == index)
-            if points.size > 9:
-                zmin = np.min(points[:, 0])
-                zmax = np.max(points[:, 0])
-                ymin = np.min(points[:, 1])
-                ymax = np.max(points[:, 1])
-                xmin = np.min(points[:, 2])
-                xmax = np.max(points[:, 2])
-
-                zmin_expanded = max(0, zmin - radius)
-                zmax_expanded = min(wts_shape[0], zmax + radius)
-                ymin_expanded = max(0, ymin - radius)
-                ymax_expanded = min(wts_shape[1], ymax + radius)
-                xmin_expanded = max(0, xmin - radius)
-                xmax_expanded = min(wts_shape[2], xmax + radius)
-
-                if (zmax_expanded - zmin_expanded) > 1 \
-                    and (ymax_expanded - ymin_expanded) > 1 \
-                    and (xmax_expanded - xmin_expanded) > 1:
-
-                    values = wts_numpy_array[zmin_expanded:zmax_expanded, ymin_expanded:ymax_expanded, xmin_expanded:xmax_expanded]
-                    unq = np.unique(values)
-                    unq = unq[unq!=0]
-                    if len(unq) > 0:
-                        if len(unq) == 1:
-                            wts_numpy_array[points[:, 0], points[:, 1], points[:, 2]] = unq[0]
-                        else:
-                            vals_for_iter = unq
-                            sizes = []
-                            for val in vals_for_iter:
-                                locs = np.argwhere(wts_numpy_array == val)
-                                heat_values = prediction[locs[:, 0], locs[:, 1], locs[:, 2]]
-                                sizes.append(np.max(heat_values))
-                            sizes = np.array(sizes)
-                            largest_val = vals_for_iter[np.argmax(sizes)]
-                            wts_numpy_array[points[:, 0], points[:, 1], points[:, 2]] = largest_val
-
-    if shape_trimming_by_extra_width:
-        if prediction.ndim == 3:
-            wts_numpy_array = wts_numpy_array[padding[0][0]:wts_shape[0]-padding[0][1],
-                                              padding[1][0]:wts_shape[1]-padding[1][1],
-                                              padding[2][0]:wts_shape[2]-padding[2][1]]
-        elif prediction.ndim == 2:
-            wts_numpy_array = wts_numpy_array[padding[0][0]:wts_shape[0]-padding[0][1],
-                                              padding[1][0]:wts_shape[1]-padding[1][1]]
-        else:
-                        raise ValueError(f"incorrect image shape{prediction.shape}")
     return wts_numpy_array
 
 def objective(trial, img, target, padding_list_val, data_dimensionality):
@@ -258,3 +202,4 @@ def objective(trial, img, target, padding_list_val, data_dimensionality):
 
 if __name__ == "__main__":
     pass
+
