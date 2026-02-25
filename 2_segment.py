@@ -482,11 +482,6 @@ def main(seed):
 
     if np.any(resizing_necessary):
         print("resizing...")
-        model_prediction = [pred[padding_list_inferece[i][0][0]: pred.shape[0]-padding_list_inferece[i][0][1], 
-                                 padding_list_inferece[i][1][0]: pred.shape[1]-padding_list_inferece[i][1][1], 
-                                 padding_list_inferece[i][2][0]: pred.shape[2]-padding_list_inferece[i][2][1]] \
-                                 for i, pred in enumerate(model_prediction)]
-        
         padding_list_inferece = [None] * len(model_prediction)
         model_prediction = [resize(model_prediction[i], (model_prediction[i].shape[0] / resizing_factors[0], 
                                                          model_prediction[i].shape[1] / resizing_factors[1], 
@@ -519,14 +514,6 @@ def main(seed):
                                                                       step_size = step_size,
                                                                       save_files = False)
         if np.any(resizing_necessary):
-            val_heatmaps = [
-            val[
-                p[0][0]: val.shape[0] - p[0][1],
-                p[1][0]: val.shape[1] - p[1][1],
-                p[2][0]: val.shape[2] - p[2][1]
-            ]
-            for p, val in zip(padding_list_val, val_heatmaps)
-            ]
             val_heatmaps = [resize(val_heatmaps[i], (val_heatmaps[i].shape[0] / resizing_factors[0], 
                                                      val_heatmaps[i].shape[1] / resizing_factors[1], 
                                                      val_heatmaps[i].shape[2] / resizing_factors[2]), 
@@ -603,4 +590,5 @@ if __name__ == "__main__":
     print("running with seed {}".format(0)) 
 
     main(0)
+
 
