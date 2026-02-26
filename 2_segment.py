@@ -520,8 +520,8 @@ def main(seed):
                                                      anti_aliasing=True, order = 3) for i in range(len(val_heatmaps))]
             padding_list_val = [None] * len(val_heatmaps)
             val_labels_integer_unpadded = [resize(img1_resized, (img1_resized.shape[0] / resizing_factors[0], 
-                                                                 img1_resized.shape[1] / resizing_factors[0], 
-                                                                 img1_resized.shape[2] / resizing_factors[0]), 
+                                                                 img1_resized.shape[1] / resizing_factors[1], 
+                                                                 img1_resized.shape[2] / resizing_factors[2]), 
                                                                  anti_aliasing=False, order = 0) \
                                                                     for img1_resized in val_labels_integer_unpadded]
 
@@ -590,5 +590,6 @@ if __name__ == "__main__":
     print("running with seed {}".format(0)) 
 
     main(0)
+
 
 
