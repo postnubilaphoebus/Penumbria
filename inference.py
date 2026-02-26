@@ -327,11 +327,18 @@ def _process_with_tta(patch, model, device, autocast_context, low_value, high_va
     avg_patch = np.zeros_like(patch, dtype=np.float32)
     axes_list = [(1, 2), (2, 1)]
     n_transforms = 0
+    tta_threshold = (high_value - low_value) * 0.01 + low_value
+    break_flag = False
     
     for k in [0, 1, 2, 3]:
+        if break_flag:
+            break
         if k == 0:
             # No rotation
             prediction = _run_model(patch, model, device, autocast_context)
+            some_foreground = np.any(prediction[5:-5, 5:-5, 5:-5] > tta_threshold)
+            if not some_foreground:
+                break_flag = True
             avg_patch += prediction
             n_transforms += 1
         else:
@@ -372,4 +379,5 @@ def _crop_and_normalize(output_volume, padding, low_value, high_value):
     else:
         output_volume = np.zeros(output_volume.shape, dtype=np.float32)
     
+
     return output_volume
