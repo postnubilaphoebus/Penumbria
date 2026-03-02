@@ -268,6 +268,7 @@ class Encoder(nn.Module):
                                                patch_size=2,
                                                hidden_size=256,
                                                num_heads=1,
+                                               pos_embed = "perceptron",
                                                spatial_dims=3)
         self.conv2 = nn.Conv3d(out_channels * 8, 512,
                                kernel_size=3, stride=1, padding=1)
