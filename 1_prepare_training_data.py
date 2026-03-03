@@ -151,10 +151,10 @@ if __name__ == "__main__":
     print("minimum foreground label:", minimum_foreground_label)
     print("some datasets like arabidopsis have 1 as the background, so check the output!")
 
-    kkk = 0
+    hhh = 0
     for label_name in tqdm(label_names):
         image_path = os.path.join(base_path, label_name)
-        actual_image_path = os.path.join(base_path, img_names[kkk])
+        actual_image_path = os.path.join(base_path, img_names[hhh])
         try:
             label_img = skimage.io.imread(image_path).astype(np.int32)
         except:
@@ -190,14 +190,14 @@ if __name__ == "__main__":
                 label_heat[points_to_return[:, 0], points_to_return[:, 1], points_to_return[:, 2]] = heat_values
                 
         name_prefix, file_extension = os.path.splitext(label_name)
-        new_name = str(kkk) + "heat_mask.tif"
+        new_name = str(hhh) + "heat_mask.tif"
         saving_path = os.path.join(base_path, folder_name)
         label_path = os.path.join(saving_path, new_name)
 
         tifffile.imwrite(label_path, label_heat.astype(np.float32))
         tifffile.imwrite(label_path.replace("heat_mask", "integer"), label_img.astype(np.float32))
         tifffile.imwrite(label_path.replace("heat_mask", "img"), img.astype(np.float32))
-        kkk += 1
+        hhh += 1
 
     # Use the clean, consistent resizing_factors variable
     with open(os.path.join(folder_name, "resizing_factors.txt"), "w") as f:
