@@ -258,6 +258,8 @@ class Encoder(nn.Module):
                                kernel_size=7, stride=2, padding=3,
                                bias=False)
 
+        self.msg_layer = MultiScaleGraphVolume(volume_side=64, num_levels=4, in_channels=in_channels, out_channels=256,feat_channels=16)
+
         self.norm1 = FilterResponseNorm3d(out_channels)
 
         self.encoder1 = EncoderBottleneck(out_channels, out_channels * 2, stride=2)
@@ -300,7 +302,7 @@ class Encoder(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 ViLBlock(
-                    dim=dim,
+                    dim=512,
                     drop_path=dpr[i],
                     direction=directions[i],
                 )
@@ -311,7 +313,7 @@ class Encoder(nn.Module):
             self.legacy_norm = LayerNorm(dim, bias=False)
         else:
             self.legacy_norm = nn.Identity()
-        self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.norm = nn.LayerNorm(512, eps=1e-6)
 
         self.output_shape = ((img_dim // 16) // 2, dim)
 
@@ -326,8 +328,19 @@ class Encoder(nn.Module):
     def no_weight_decay(self):
         return {"pos_embed.embed"}
 
-    def forward(self, x):
+    def drop_branches(self, msg_feat, unet_feat, p_drop=0.15, training=True):
+        if not training:
+            return msg_feat, unet_feat
+        r = torch.rand(1).item()
+        if r < p_drop:
+            return torch.zeros_like(msg_feat), unet_feat
+        elif r < 2 * p_drop:
+            return msg_feat, torch.zeros_like(unet_feat)
+        return msg_feat, unet_feat
+
+    def forward(self, x, prompt = None):
         x = self.zernike(x)
+        msg = self.msg_layer(x)
         x = self.conv1(x)
         x = self.norm1(x)
         x1 = x
@@ -337,6 +350,13 @@ class Encoder(nn.Module):
         x = self.encoder3(x3)
         x = self.patch_embed(x)
         x = einops.rearrange(x, "b ... d -> b (...) d")
+
+        msg = msg.reshape(x.shape)
+        x, msg = self.drop_branches(msg, x, p_drop = 0.15, training=self.training)
+        x = torch.cat([x, msg], dim = -1)
+        if prompt is not None:
+            prompt = prompt.reshape(x.shape)
+            x = x + prompt
         
         for block in self.blocks:
             x = block(x)
@@ -414,8 +434,461 @@ class UVixLSTM(nn.Module):
         self.encoder = Encoder(img_dim, in_channels, out_channels,
                                    depth, dim)
         self.decoder = Decoder(out_channels, class_num)
+        self.cell_clue_layer = FRNConvDownsample3D_3Steps(in_channels=1, mid_channels=64, out_channels=512)
 
-    def forward(self, x):
-        x, x1, x2, x3 = self.encoder(x)
+    def forward(self, x, prompt = None):
+        if prompt is not None:
+            prompt = self.cell_clue_layer(prompt)
+        x, x1, x2, x3 = self.encoder(x, prompt)
         x_main = self.decoder(x, x1, x2, x3)
-        return x_main, None
+
+
+import math
+from typing import List, Optional
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def squash(s: torch.Tensor, dim: int = 1, eps: float = 1e-8) -> torch.Tensor:
+    """
+    Capsule squash non-linearity.
+
+    Maps vector ``s`` so its ℓ₂-norm lies in (0, 1):
+        v = (‖s‖² / (1 + ‖s‖²)) · (s / ‖s‖)
+
+    Short vectors → near-zero output  (existence unlikely).
+    Long  vectors → near-unit output  (existence likely).
+
+    Args:
+        s:   Tensor of shape (..., C, ...) where ``dim`` indexes the capsule dim.
+        dim: Dimension along which to compute the norm.
+    """
+    norm_sq = (s * s).sum(dim=dim, keepdim=True)
+    norm    = norm_sq.sqrt()
+    return (norm_sq / (1.0 + norm_sq)) * (s / (norm + eps))
+
+
+def _make_cascade_proj(feat_channels: int, log2_ratio: int) -> nn.Module:
+    """
+    Cascade of ``log2_ratio`` stride-2 Conv3d + GroupNorm + GELU blocks.
+
+    Used to spatially reduce a feature map by exactly 2^log2_ratio without
+    the artefacts that large-stride single convolutions can introduce.
+    """
+    if log2_ratio == 0:
+        return nn.Identity()
+    g = min(8, feat_channels)
+    layers: List[nn.Module] = []
+    for _ in range(log2_ratio):
+        layers += [
+            nn.Conv3d(feat_channels, feat_channels, 3,
+                      stride=2, padding=1, bias=False),
+            nn.GroupNorm(g, feat_channels),
+            nn.GELU(),
+        ]
+    return nn.Sequential(*layers)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scale-level feature extractor
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ScaleLevelExtractor(nn.Module):
+    """
+    Feature extraction at one grid-scale level.
+
+    Flow:
+        input (B, C_in, N, N, N)
+          │
+          ├─ Conv3d(dilation=d)  ← receptive field: (2d+1)³
+          ├─ GroupNorm + GELU
+          ├─ Conv3d(1×1×1)       ← channel mixing
+          ├─ GroupNorm + GELU
+          └─ AvgPool3d(stride=s) ← sample the grid
+          │
+        output (B, C, N//s, N//s, N//s)
+
+    Args:
+        in_channels:   Input channels C_in.
+        feat_channels: Output channels C.
+        dilation:      Conv dilation.  Set to 2^k for level k.
+        stride:        Grid sampling stride.  Set to 2^k for level k.
+    """
+
+    def __init__(
+        self,
+        in_channels:   int,
+        feat_channels: int,
+        dilation:      int,
+        stride:        int,
+    ) -> None:
+        super().__init__()
+        g = min(8, feat_channels)
+        self.conv = nn.Sequential(
+            nn.Conv3d(in_channels, feat_channels,
+                      kernel_size=3, dilation=dilation,
+                      padding=dilation, bias=False),
+            nn.GroupNorm(g, feat_channels),
+            nn.GELU(),
+            nn.Conv3d(feat_channels, feat_channels,
+                      kernel_size=1, bias=False),
+            nn.GroupNorm(g, feat_channels),
+            nn.GELU(),
+        )
+        self.pool = nn.AvgPool3d(stride, stride) if stride > 1 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.pool(self.conv(x))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spatial capsule router
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SpatialCapsuleRouter(nn.Module):
+    """
+    Routes capsule features from a fine grid level to the adjacent coarser one.
+
+    Key idea — learned coupling prior
+    ──────────────────────────────────
+    ``vote_conv`` is a stride-2, kernel=(hood × hood × hood) Conv3d that produces
+    ``hood³`` vote vectors per coarse position from the fine feature map.
+    The vote vectors answer: "given what I (fine-level position i) see, here is
+    my prediction for what coarse-level position j should encode."
+
+    ``log_prior``  (shape [1, hood³, 1, 1, 1], init = 0)
+        Learnable log-prior routing logits — one scalar per neighbourhood
+        offset.  The softmax gives the base coupling probability for each
+        offset direction before agreement refinement.
+
+        • At init   → uniform (1/hood³ for each offset)
+        • After training → some offsets amplified, others suppressed
+          → potentially sparse / small-world structure
+
+    Dynamic routing (Sabour et al., 2017)
+    ──────────────────────────────────────
+    Inside each forward call, ``num_routing_iters`` agreement steps refine
+    the coupling temporarily (these runtime updates do not back-propagate
+    through themselves; only the learned ``log_prior`` accumulates gradient).
+
+        for i in range(num_routing_iters):
+            c  = softmax(b)                  # coupling coefficients
+            s  = Σ_k c_k · votes_k + coarse  # aggregated capsule (residual)
+            v  = squash(s)                   # capsule output
+            b += votes · v                   # agreement update
+
+    Args:
+        feat_channels:     Feature / capsule dimension C.
+        neighborhood:      Side length (hood) of the routing window.
+                           Neighbourhood covers hood³ fine-grid positions.
+        num_routing_iters: Inner routing iterations (3 recommended).
+    """
+
+    def __init__(
+        self,
+        feat_channels:     int,
+        neighborhood:      int = 3,
+        num_routing_iters: int = 3,
+    ) -> None:
+        super().__init__()
+        self.C     = feat_channels
+        self.hood  = neighborhood
+        self.K3    = neighborhood ** 3
+        self.iters = num_routing_iters
+        g = min(8, feat_channels)
+
+        # Produces hood³ vote vectors per coarse position.
+        # stride=2 halves the spatial dims (fine → coarse).
+        self.vote_conv = nn.Conv3d(
+            feat_channels,
+            feat_channels * self.K3,
+            kernel_size=neighborhood,
+            stride=2,
+            padding=neighborhood // 2,
+            bias=False,
+        )
+
+        # ─ The key "connectedness" parameter ─────────────────────────────
+        # One log-prior per neighbourhood offset.
+        # Initialized to 0 → uniform softmax → uniform routing.
+        # SGD pushes these toward a learned topology.
+        self.log_prior = nn.Parameter(torch.zeros(1, self.K3, 1, 1, 1))
+
+        self.out_norm = nn.GroupNorm(g, feat_channels)
+
+        # self.rnn = nn.GRU(self.K3, self.K3 // 2, 1, bidirectional = True)
+        # self.linear_add = nn.Linear(self.K3-1, self.K3)
+
+    # ─────────────────────────────────────────────────────────────────────
+
+    def forward(self, fine: torch.Tensor, coarse: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            fine:   (B, C, 2n, 2n, 2n)  finer level features.
+            coarse: (B, C,  n,  n,  n)  coarser level features (used as residual
+                                         and capsule initialisation).
+        Returns:
+            Updated coarser capsules, shape (B, C, n, n, n).
+        """
+        B, C = fine.shape[:2]
+
+        # ── Vote projection ──────────────────────────────────────────────
+        # votes_flat: (B, C·K³, n, n, n)
+        votes_flat = self.vote_conv(fine)
+        n = votes_flat.shape[2]          # coarse spatial size
+
+        # votes: (B, K³, C, n, n, n)
+        votes = votes_flat.view(B, self.K3, C, n, n, n)
+
+        # ── Routing logit initialisation ─────────────────────────────────
+        # Clone so that in-loop additions don't affect grad of log_prior.
+        # Shape: (B, K³, n, n, n)
+        b = self.log_prior.expand(B, self.K3, n, n, n).clone()
+
+        # ── Dynamic routing iterations ───────────────────────────────────
+        v: torch.Tensor = coarse
+        for i in range(self.iters):
+
+            # Coupling coefficients: softmax over K³ neighbourhood offsets
+            c = F.softmax(b, dim=1)                             # (B, K³, n,n,n)
+
+            # Weighted sum of votes + residual from coarse-level features
+            #   c.unsqueeze(2): (B, K³, 1, n, n, n)
+            #   votes:          (B, K³, C, n, n, n)
+            s = (c.unsqueeze(2) * votes).sum(dim=1) + coarse   # (B, C, n,n,n)
+
+            # Squash: capsule output
+            v = squash(s, dim=1)
+
+            # Agreement update (skip on final iteration — b not used again)
+            if i < self.iters - 1:
+                # Dot product votes · v, summed over C → (B, K³, n,n,n)
+                agreement = (votes * v.unsqueeze(1)).sum(dim=2)
+                b = b + agreement
+
+        return self.out_norm(v)
+
+    # ─────────────────────────────────────────────────────────────────────
+
+    def routing_weights(self) -> torch.Tensor:
+        """
+        Inspect the learned coupling prior: softmax(log_prior).
+
+        Returns:
+            Tensor of shape (hood³,) — probability mass over neighbourhood
+            offsets.  Uniform (1/hood³) at init; diverges during training.
+        """
+        with torch.no_grad():
+            return F.softmax(self.log_prior.view(-1), dim=0)
+
+    def routing_entropy(self) -> float:
+        """
+        Shannon entropy of the current routing distribution (in bits).
+        Max = log₂(hood³); converges toward 0 for highly peaked distributions.
+        """
+        p = self.routing_weights()
+        return float(-(p * (p + 1e-12).log2()).sum())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main layer
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MultiScaleGraphVolume(nn.Module):
+    """
+    Multi-scale graph-sampling layer for 3-D cubic volumes.
+
+    Combines:
+      • Regular-grid sampling at K coarseness levels (stride 2^k per level).
+      • Dilated 3-D convolutions: dilation 2^k ∝ coarseness level.
+      • Capsule-style dynamic routing between adjacent levels, with
+        **learned coupling priors** that start uniform and diverge toward
+        sparse / small-world topology.
+      • Final multi-level fusion at the coarsest spatial resolution.
+
+    Grid layout (level 0 = finest, level K-1 = coarsest)
+    ─────────────────────────────────────────────────────────────────────
+    Level   Stride   Dilation   Grid pts/dim   Routing
+      0       2⁰=1    2⁰=1         N/1          ─── router 0 ───►
+      1       2¹=2    2¹=2         N/2          ─── router 1 ───►
+      2       2²=4    2²=4         N/4          ─── router 2 ───►
+      3       2³=8    2³=8         N/8
+
+    After routing, all levels are projected to grid size N/2^(K-1) and fused.
+
+    Args:
+        volume_side (int):
+            Side length N of the cubic input volume.
+            Must satisfy: ``volume_side % 2^(num_levels-1) == 0``.
+        num_levels (int):
+            Number of grid coarseness levels K.  Default 4.
+        in_channels (int):
+            Input feature channels.
+        feat_channels (int):
+            Internal feature channels at each level.
+        out_channels (int | None):
+            Output channels.  Defaults to ``feat_channels``.
+        num_routing_iters (int):
+            Capsule routing iterations per SpatialCapsuleRouter.  Default 3.
+        neighborhood (int):
+            Side length of the routing window in fine-grid coordinates.
+            Larger → more expressive routing, more parameters.  Default 3.
+
+    Shape:
+        - Input:  ``(B, in_channels, N, N, N)``
+        - Output: ``(B, out_channels, N//2^(K-1), N//2^(K-1), N//2^(K-1))``
+
+    Example::
+
+        >>> layer = MultiScaleGraphVolume(volume_side=32, num_levels=4,
+        ...                               in_channels=1, feat_channels=16)
+        >>> x = torch.randn(2, 1, 32, 32, 32)
+        >>> y = layer(x)
+        >>> y.shape
+        torch.Size([2, 16, 4, 4, 4])
+
+        >>> # inspect learned routing topology after some training
+        >>> for k, probs in enumerate(layer.routing_topology()):
+        ...     print(f"Router {k}→{k+1}: entropy = {layer.routers[k].routing_entropy():.3f} bits")
+    """
+
+    def __init__(
+        self,
+        volume_side:       int,
+        num_levels:        int = 4,
+        in_channels:       int = 1,
+        feat_channels:     int = 32,
+        out_channels:      Optional[int] = None,
+        num_routing_iters: int = 3,
+        neighborhood:      int = 3,
+    ) -> None:
+        super().__init__()
+
+        self.N    = volume_side
+        self.K    = num_levels
+        self.C    = feat_channels
+        self.Cout = out_channels or feat_channels
+
+        # ── Validation ───────────────────────────────────────────────────────
+        min_divisor = 2 ** (num_levels - 1)
+        if volume_side % min_divisor != 0:
+            raise ValueError(
+                f"volume_side={volume_side} must be divisible by "
+                f"2^(num_levels-1)={min_divisor} so all grid levels are integers."
+            )
+
+        # ── Grid parameters per level ─────────────────────────────────────────
+        # stride_k = 2^k,  dilation_k = 2^k
+        self.strides    = [2 ** k for k in range(num_levels)]   # 1, 2, 4, 8, …
+        self.dilations  = [2 ** k for k in range(num_levels)]   # 1, 2, 4, 8, …
+        self.grid_sizes = [volume_side // s for s in self.strides]
+
+        # ── Feature extractors: one per level ─────────────────────────────────
+        self.extractors = nn.ModuleList([
+            ScaleLevelExtractor(
+                in_channels, feat_channels,
+                dilation=self.dilations[k],
+                stride=self.strides[k],
+            )
+            for k in range(num_levels)
+        ])
+
+        # ── Capsule routers: between adjacent levels (fine → coarse) ──────────
+        # Router k routes from level k into level k+1
+        self.routers = nn.ModuleList([
+            SpatialCapsuleRouter(feat_channels, neighborhood, num_routing_iters)
+            for _ in range(num_levels - 1)
+        ])
+
+        # ── Project every level to the coarsest spatial resolution ────────────
+        # Level k has grid_sizes[k] = N/2^k.
+        # Coarsest has grid_sizes[K-1] = N/2^(K-1).
+        # Reduction ratio for level k = 2^(K-1-k).
+        coarsest = self.grid_sizes[-1]
+        self.projections = nn.ModuleList()
+        for k in range(num_levels):
+            ratio  = self.grid_sizes[k] // coarsest     # always a power of 2
+            log2r  = int(math.log2(ratio)) if ratio > 1 else 0
+            self.projections.append(_make_cascade_proj(feat_channels, log2r))
+
+        # ── Fuse all projected levels ─────────────────────────────────────────
+        g = min(8, self.Cout)
+        self.fusion = nn.Sequential(
+            nn.Conv3d(feat_channels * num_levels, self.Cout, 1, bias=False),
+            nn.GroupNorm(g, self.Cout),
+            nn.GELU(),
+        )
+        self.final_pool = nn.AvgPool3d(4, 4)
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input volume, shape ``(B, in_channels, N, N, N)``.
+
+        Returns:
+            Fused multi-scale features,
+            shape ``(B, out_channels, N//2^(K-1), N//2^(K-1), N//2^(K-1))``.
+        """
+        # ── 1. Multi-scale feature extraction ────────────────────────────────
+        # feats[k]: (B, C, grid_sizes[k], grid_sizes[k], grid_sizes[k])
+        feats: List[torch.Tensor] = [ext(x) for ext in self.extractors]
+
+        # ── 2. Capsule routing: bottom-up propagation (fine → coarse) ─────────
+        # Each router augments the coarser level with aggregated fine-level info.
+        routed: List[torch.Tensor] = list(feats)
+        for k, router in enumerate(self.routers):
+            routed[k + 1] = router(routed[k], routed[k + 1])
+
+        # ── 3. Project all levels to coarsest spatial resolution ──────────────
+        projected = [proj(f) for proj, f in zip(self.projections, routed)]
+
+        # ── 4. Concatenate across levels and fuse ─────────────────────────────
+        return self.final_pool(self.fusion(torch.cat(projected, dim=1)))
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def routing_topology(self) -> List[torch.Tensor]:
+        """
+        Return the learned coupling-prior probability vectors for every router.
+
+        Each entry has shape ``(hood³,)`` and sums to 1.  At init all entries
+        equal 1/hood³; after training the distribution reflects learned routing
+        structure.
+
+        Returns:
+            List of length K-1; entry k corresponds to the router that sends
+            features from level k to level k+1.
+
+        Example::
+
+            topo = layer.routing_topology()
+            for k, probs in enumerate(topo):
+                print(f"Router {k}→{k+1}: {probs.detach().cpu().numpy().round(3)}")
+        """
+        return [r.routing_weights() for r in self.routers]
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def extra_repr(self) -> str:
+        header = (
+            f"volume_side={self.N}, num_levels={self.K}, "
+            f"feat_channels={self.C}, out_channels={self.Cout}\n"
+            f"  {'Level':>5}  {'Stride':>6}  {'Dilation':>8}  "
+            f"{'Grid pts/dim':>12}  {'Total pts':>12}"
+        )
+        rows = [header]
+        for k in range(self.K):
+            g = self.grid_sizes[k]
+            rows.append(
+                f"  {k:>5}  {self.strides[k]:>6}  {self.dilations[k]:>8}  "
+                f"{g:>12}  {g**3:>12,}"
+            )
+        return "\n".join(rows)
