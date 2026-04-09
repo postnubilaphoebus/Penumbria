@@ -372,6 +372,16 @@ def train_model(model,
         if "gaussian_noise" in data_augmentation_types:
             input_images, gaussian_tensors = gaussian_noise_augmentation(input_images)
 
+        unqs = torch.unique(labels_integer[labels_integer>0])
+
+        if len(unqs) > 1:
+            sampled_id = random.sample(list(unqs), 1)[0]
+            if np.random.uniform(0, 1) > 0.8:
+                sampled_cue = True
+                cue_labels_inten = torch.where(labels_integer == sampled_id, labels_inten, torch.ones_like(labels_inten)*(-5)).to(device)
+            else:
+                sampled_cue = False
+
         # Forward pass
         if device.type == 'cuda':
             with autocast_context:
@@ -382,8 +392,10 @@ def train_model(model,
                     input_images = input_images.unsqueeze(0).unsqueeze(0)
                 else:
                     input_images = input_images.squeeze().unsqueeze(0).unsqueeze(0)
-
-                output, _ = model(input_images)
+                if sampled_cue:
+                    output, _ = model(input_images, cue_labels_inten.unsqueeze(0))
+                else:
+                    output, _ = model(input_images)
                 output = output.squeeze()
                 mask = torch.where(labels_inten != ignore_index, 1.0, 0.0)
                 mask2 = torch.where(labels_integer != ignore_index, 1.0, 0.0)
