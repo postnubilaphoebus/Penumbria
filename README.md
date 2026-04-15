@@ -16,18 +16,24 @@ Penumbria works in three main steps:
 
 ## Installation
 
-1. Create a conda environment:
+1. Clone the repository and navigate into the folder:
+```bash
+  https://github.com/postnubilaphoebus/Penumbria.git
+  cd Penumbria
+```
+
+2. Create a conda environment:
 ```bash
 conda create -n penumbria
 conda activate penumbria
 ```
 
-2. Install PyTorch and torchvision separately (we're using PyTorch 2.5.1, but other versions should work):
+3. Install PyTorch and torchvision separately (we're using PyTorch 2.5.1, but other versions should work):
 ```bash
 pip install torch torchvision
 ```
 
-3. Install remaining dependencies:
+4. Install remaining dependencies:
 ```bash
 pip install -r requirements.txt
 ```
