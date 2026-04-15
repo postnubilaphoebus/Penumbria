@@ -19,12 +19,16 @@ Penumbria works in three main steps:
 1. Clone the repository and navigate into the folder:
 ```bash
   git clone https://github.com/postnubilaphoebus/Penumbria.git
-  cd Penumbria
+```
+```bash
+cd Penumbria
 ```
 
 2. Create a conda environment:
 ```bash
 conda create -n penumbria
+```
+```bash
 conda activate penumbria
 ```
 
