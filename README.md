@@ -18,7 +18,7 @@ Penumbria works in three main steps:
 
 1. Clone the repository and navigate into the folder:
 ```bash
-  https://github.com/postnubilaphoebus/Penumbria.git
+  git clone https://github.com/postnubilaphoebus/Penumbria.git
   cd Penumbria
 ```
 
