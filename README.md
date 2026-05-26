@@ -14,7 +14,7 @@ Penumbria is a deep learning algorithm for accurate 3D cell segmentation in micr
 
 <img width="1846" height="1343" alt="image" src="https://github.com/user-attachments/assets/daa8ff02-8b0a-405f-a8b0-91fde2ac0afa" />
 
-***
+---
 
 Penumbria works in three main steps:
 
