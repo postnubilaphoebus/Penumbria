@@ -10,3 +10,4 @@ ImageIO
 SimpleITK
 optuna
 einops
+taichi
