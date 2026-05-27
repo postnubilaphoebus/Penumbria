@@ -534,7 +534,7 @@ def main(seed):
                                                val_heatmaps, 
                                                val_labels_integer_unpadded, 
                                                padding_list_val, 
-                                               data_dimensionality), n_trials=500)
+                                               data_dimensionality), n_trials=300)
 
         besth = study.best_params['h']
         best_cc = study.best_params['c']
