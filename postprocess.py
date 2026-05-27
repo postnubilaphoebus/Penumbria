@@ -135,6 +135,8 @@ def watershed_inference(prediction,
     # watershed flooding
     background_image = (prediction > background_threshold).astype(int)
     wts = watershed(-prediction, labeled_array, mask = background_image)
+    ## you can change to GPU watershed if you like, works until 600M voxels with 8GB VRAM
+    # wts = fast_wts(prediction, labeled_array, background_threshold) 
 
     # cell confidence exclusion
     slices = find_objects(wts)
