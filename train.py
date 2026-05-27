@@ -128,7 +128,8 @@ def train_model(model,
                                            "motion_blur",
                                            "gaussian_noise"],
                 print_grad_norms = False,
-                evaluation_interval = 20):
+                evaluation_interval = 20,
+                use_sgg_layer = True):
     
     if mixed_precision:
         scaler = get_grad_scaler(mixed_precision)
@@ -372,16 +373,18 @@ def train_model(model,
         if "gaussian_noise" in data_augmentation_types:
             input_images, gaussian_tensors = gaussian_noise_augmentation(input_images)
 
-        unqs = torch.unique(labels_integer[labels_integer>0])
-        sampled_cue = False
-
-        if len(unqs) > 1:
-            sampled_id = random.sample(list(unqs), 1)[0]
-            if np.random.uniform(0, 1) > 0.8:
-                sampled_cue = True
-                cue_labels_inten = torch.where(labels_integer == sampled_id, labels_inten, torch.ones_like(labels_inten)*(-5)).to(device)
-            else:
-                sampled_cue = False
+        if use_sgg_layer:
+            unqs = torch.unique(labels_integer[labels_integer>0])
+            sampled_cue = False
+            if len(unqs) > 1:
+                sampled_id = random.sample(list(unqs), 1)[0]
+                if np.random.uniform(0, 1) > 0.8:
+                    sampled_cue = True
+                    cue_labels_inten = torch.where(labels_integer == sampled_id, labels_inten, torch.ones_like(labels_inten)*(-5)).to(device)
+                else:
+                    sampled_cue = False
+        else:
+            sampled_cue = False
 
         # Forward pass
         if device.type == 'cuda':

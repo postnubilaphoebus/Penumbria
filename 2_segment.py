@@ -224,6 +224,7 @@ def main(seed):
     load_pretrained = model_cfg['load_pretrained']
     momentum = model_cfg['momentum']
     model_weights_path = model_cfg['model_weights_path']
+    use_sgg_layer = model_cfg['use_sgg_layer']
 
     # Training
     training_iterations = train_cfg['training_iterations']
@@ -395,11 +396,13 @@ def main(seed):
 
         print("beginning training...")
         print("training_image_shape", training_image_shape)
+        print("use_sgg_layer: ", use_sgg_layer)
         model = UVixLSTM(class_num=1, 
                          img_dim=training_image_shape[0], 
                          out_channels=64, 
                          depth = 12, 
-                         dim = 256).to(device)
+                         dim = 256,
+                         use_sgg_layer = use_sgg_layer).to(device)
         model.train()
         loss_fn = torch.nn.MSELoss(reduction="none")
 
@@ -434,7 +437,8 @@ def main(seed):
                             verbose = verbosity_flag,
                             training_iterations = training_iterations,
                             data_augmentation_types = data_augmentation_types,
-                            evaluation_interval = evaluation_interval)
+                            evaluation_interval = evaluation_interval,
+                            use_sgg_layer = use_sgg_layer)
 
         seed_string = str(seed)
         model_weights_path = seed_string + "_" + model_weights_path
