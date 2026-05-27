@@ -5,6 +5,7 @@ from matching import matching
 import numba as nb
 import SimpleITK as sitk
 from scipy.ndimage import sobel
+from watershed_fast import fast_wts
 
 def gradient_symmetry_voting(image, r=5):
     gx = sobel(image, axis=0)
@@ -134,7 +135,6 @@ def watershed_inference(prediction,
     # watershed flooding
     background_image = (prediction > background_threshold).astype(int)
     wts = watershed(-prediction, labeled_array, mask = background_image)
-    wts_shape = wts.shape
 
     # cell confidence exclusion
     slices = find_objects(wts)
