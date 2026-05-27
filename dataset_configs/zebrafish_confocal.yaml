@@ -11,6 +11,7 @@ model:
   load_pretrained: false
   momentum: 0.9
   model_weights_path: "0_best_model.pth"
+  use_sgg_layer: true # change to false if you run into out-of-memory errors
 
 training:
   training_iterations: 6000
