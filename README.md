@@ -200,7 +200,7 @@ After training, you'll fine-tune these parameters on your validation set to opti
 **`label_transform` section**: These values are automatically set during data preparation and just read by the training script.
 
 **`model` section**: Only modify if you want to load a pretrained model using `load_pretrained: true` and specifying `model_weights_path`.
-However, if you run into CUDA out-of-memory errors, it is recommended to turn the SGG layer off, like so: use_sgg_layer: false
+However, if you run into CUDA out-of-memory errors, it is recommended to turn the SGG layer off, like so: `use_sgg_layer: false`
 
 All other default parameters are highly optimized and rarely need adjustment.
 
