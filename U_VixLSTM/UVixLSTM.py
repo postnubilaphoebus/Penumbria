@@ -248,7 +248,8 @@ class Encoder(nn.Module):
                  stride=None,
                  alternation="bidirectional",
                  drop_path_decay=False,
-                 legacy_norm=False):
+                 legacy_norm=False,
+                 use_sgg_layer = True):
         super().__init__()
 
         self.norm_type = "instance"
@@ -257,8 +258,10 @@ class Encoder(nn.Module):
         self.conv1 = nn.Conv3d(in_channels, out_channels,
                                kernel_size=7, stride=2, padding=3,
                                bias=False)
+        self.use_sgg_layer = use_sgg_layer
+        if self.use_sgg_layer:
 
-        self.msg_layer = MultiScaleGraphVolume(volume_side=64, num_levels=4, in_channels=in_channels, out_channels=256,feat_channels=16)
+            self.msg_layer = MultiScaleGraphVolume(volume_side=64, num_levels=4, in_channels=in_channels, out_channels=256,feat_channels=16)
 
         self.norm1 = FilterResponseNorm3d(out_channels)
 
@@ -272,13 +275,6 @@ class Encoder(nn.Module):
                                                num_heads=1,
                                                pos_embed = "perceptron",
                                                spatial_dims=3)
-        self.conv2 = nn.Conv3d(out_channels * 8, 512,
-                               kernel_size=3, stride=1, padding=1)
-        
-        if self.norm_type == "instance":
-            self.norm2 = FilterResponseNorm3d(512)
-        else:
-            self.norm2 = nn.BatchNorm3d(512)
         self.alternation = alternation
         self.drop_path_rate = drop_path_rate
         self.drop_path_decay = drop_path_decay
@@ -302,7 +298,7 @@ class Encoder(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 ViLBlock(
-                    dim=512,
+                    dim=512 if self.use_sgg_layer else 256,
                     drop_path=dpr[i],
                     direction=directions[i],
                 )
@@ -313,7 +309,7 @@ class Encoder(nn.Module):
             self.legacy_norm = LayerNorm(dim, bias=False)
         else:
             self.legacy_norm = nn.Identity()
-        self.norm = nn.LayerNorm(512, eps=1e-6)
+        self.norm = nn.LayerNorm(512 if self.use_sgg_layer else 256, eps=1e-6)
 
         self.output_shape = ((img_dim // 16) // 2, dim)
 
@@ -340,7 +336,8 @@ class Encoder(nn.Module):
 
     def forward(self, x, prompt = None):
         x = self.zernike(x)
-        msg = self.msg_layer(x)
+        if self.use_sgg_layer:
+            msg = self.msg_layer(x)
         x = self.conv1(x)
         x = self.norm1(x)
         x1 = x
@@ -350,10 +347,10 @@ class Encoder(nn.Module):
         x = self.encoder3(x3)
         x = self.patch_embed(x)
         x = einops.rearrange(x, "b ... d -> b (...) d")
-
-        msg = msg.reshape(x.shape)
-        x, msg = self.drop_branches(msg, x, p_drop = 0.15, training=self.training)
-        x = torch.cat([x, msg], dim = -1)
+        if self.use_sgg_layer:
+            msg = msg.reshape(x.shape)
+            x, msg = self.drop_branches(msg, x, p_drop = 0.15, training=self.training)
+            x = torch.cat([x, msg], dim = -1)
         if prompt is not None:
             prompt = prompt.reshape(x.shape)
             x = x + prompt
@@ -406,10 +403,13 @@ class DecoderBottleneck(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, out_channels, class_num):
+    def __init__(self, out_channels, class_num, use_sgg_layer = True):
         super().__init__()
 
-        self.decoder1 = DecoderBottleneck(out_channels * 8, out_channels * 2)
+        if use_sgg_layer:
+            self.decoder1 = DecoderBottleneck(out_channels * 8 + out_channels * 4, out_channels * 2)
+        else:
+            self.decoder1 = DecoderBottleneck(out_channels * 8, out_channels * 2)
         self.decoder2 = DecoderBottleneck(out_channels * 4, out_channels)
         self.decoder3 = DecoderBottleneck(out_channels * 2, int(out_channels * 1 / 2))
         self.decoder4 = DecoderBottleneck(int(out_channels * 1 / 2), int(out_channels * 1 / 8))
@@ -455,12 +455,14 @@ class UVixLSTM(nn.Module):
                      in_channels=1,
                      out_channels=64,
                      depth=12,
-                     dim=256):
+                     dim=256,
+                     use_sgg_layer = True):
         super().__init__()
         self.encoder = Encoder(img_dim, in_channels, out_channels,
-                                   depth, dim)
-        self.decoder = Decoder(out_channels, class_num)
-        self.cell_clue_layer = FRNConvDownsample3D_3Steps(in_channels=1, mid_channels=64, out_channels=512)
+                                   depth, dim, use_sgg_layer = use_sgg_layer)
+        self.decoder = Decoder(out_channels, class_num, use_sgg_layer = use_sgg_layer)
+        if use_sgg_layer:
+            self.cell_clue_layer = FRNConvDownsample3D_3Steps(in_channels=1, mid_channels=64, out_channels=512)
 
     def forward(self, x, prompt = None):
         if prompt is not None:
