@@ -423,6 +423,32 @@ class Decoder(nn.Module):
         x = self.conv1(x)
         return x
 
+class FRNConvDownsample3D_3Steps(nn.Module):
+    def __init__(self, in_channels=1, mid_channels=64, out_channels=256):
+        super().__init__()
+        
+        # Step 1: Dilated conv (~7 effective) + FRN + MaxPool (stride 4)
+        self.conv1 = nn.Conv3d(in_channels, mid_channels, kernel_size=3, padding=2, dilation=2)
+        self.frn1 = FilterResponseNorm3d(mid_channels)
+        self.pool1 = nn.MaxPool3d(kernel_size=4, stride=4)
+        
+        # Step 2: Smaller conv + FRN + MaxPool (stride 2)
+        self.conv2 = nn.Conv3d(mid_channels, mid_channels, kernel_size=3, padding=1)
+        self.frn2 = FilterResponseNorm3d(mid_channels)
+        self.pool2 = nn.MaxPool3d(kernel_size=4, stride=4)
+        
+        # Step 3: Final conv to out_channels + FRN + MaxPool (stride 2)
+        self.conv3 = nn.Conv3d(mid_channels, out_channels, kernel_size=3, padding=1)
+        self.frn3 = FilterResponseNorm3d(out_channels)
+        self.pool3 = nn.MaxPool3d(kernel_size=2, stride=2)
+        
+    def forward(self, x):
+        x = self.conv1(x); x = self.frn1(x); x = self.pool1(x)
+        x = self.conv2(x); x = self.frn2(x); x = self.pool2(x)
+        x = self.conv3(x); x = self.frn3(x); x = self.pool3(x)
+        return x
+
+
 class UVixLSTM(nn.Module):
     def __init__(self, class_num, 
                      img_dim=96,
@@ -441,6 +467,7 @@ class UVixLSTM(nn.Module):
             prompt = self.cell_clue_layer(prompt)
         x, x1, x2, x3 = self.encoder(x, prompt)
         x_main = self.decoder(x, x1, x2, x3)
+        return x_main, None
 
 
 import math
