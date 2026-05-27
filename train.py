@@ -373,6 +373,7 @@ def train_model(model,
             input_images, gaussian_tensors = gaussian_noise_augmentation(input_images)
 
         unqs = torch.unique(labels_integer[labels_integer>0])
+        sampled_cue = False
 
         if len(unqs) > 1:
             sampled_id = random.sample(list(unqs), 1)[0]
