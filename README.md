@@ -214,3 +214,7 @@ All other default parameters are highly optimized and rarely need adjustment.
 ## Questions?
 
 If something isn't working or you need help understanding a parameter, feel free to open an issue!
+
+## Copyright
+
+Copyright © 2026 Max Planck Society. All rights reserved. This code is published for review only. No license is granted to use, copy, modify, or distribute it. Licenses could be obtained from Max Planck-Innovation; www. max-planck-innovation.de, info@max-planck-innovation.de
