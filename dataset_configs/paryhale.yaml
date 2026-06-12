@@ -40,7 +40,7 @@ inference:
   inference_indices: [3]
 
 postprocessing:
-  parameter_tuning: false
+  parameter_tuning: true
   cell_prominence: 0.4
   cell_confidence_minimum: 0.5
   background_threshold: 0.2
