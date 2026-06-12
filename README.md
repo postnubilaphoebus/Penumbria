@@ -222,4 +222,4 @@ See the LICENSE file for details.
 
 ## Copyright
 
-Copyright © 2026 Max Planck Society. All rights reserved. This code is published for review only. No license is granted to use, copy, modify, or distribute it. Licenses could be obtained from Max Planck-Innovation; www. max-planck-innovation.de, info@max-planck-innovation.de
+Copyright © 2026 Max Planck Society. All rights reserved.
