@@ -191,7 +191,7 @@ if __name__ == "__main__":
                 
         name_prefix, file_extension = os.path.splitext(label_name)
         new_name = str(hhh) + "heat_mask.tif"
-        saving_path = os.path.join(base_path, folder_name)
+        saving_path = folder_name
         label_path = os.path.join(saving_path, new_name)
 
         tifffile.imwrite(label_path, label_heat.astype(np.float32))
