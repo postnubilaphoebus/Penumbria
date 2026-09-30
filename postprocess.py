@@ -5,7 +5,8 @@ from matching import matching
 import numba as nb
 import SimpleITK as sitk
 from scipy.ndimage import sobel
-from watershed_fast import fast_wts
+from gpu_morphology import h_dome
+from gpu_watershed import seeded_watershed
 
 def gradient_symmetry_voting(image, r=5):
     gx = sobel(image, axis=0)
@@ -119,25 +120,15 @@ def watershed_inference(prediction,
         # hdome transform
         if sym:
             hdome_image = muti_scale_symmetry(hdome_image)
-        image_sitk = sitk.GetImageFromArray(hdome_image)
-        marker_image = sitk.Subtract(image_sitk, h)
-        reconstructed = sitk.ReconstructionByDilation(marker_image, image_sitk)
-        reconstructed = sitk.GetArrayFromImage(reconstructed)
-        h_maxima = hdome_image - reconstructed
-        h_maxima = h_maxima * (prediction > h)
-        h_maxima_binary = h_maxima > 0
+        h_maxima_binary = (h_dome(hdome_image, h) > 0) & (prediction > h)
         labeled_array, _ = label(h_maxima_binary)
     else:
         h_maxima_binary = hdome_image > h
         labeled_array, _ = label(h_maxima_binary)
 
 
-    # watershed flooding
-    background_image = (prediction > background_threshold).astype(int)
-    wts = watershed(-prediction, labeled_array, mask = background_image)
-    ## you can change to GPU watershed if you like, works until 600M voxels with 8GB VRAM
-    ## method can be up to 4x faster than skimage watershed, may require GPU warmup
-    # wts = fast_wts(prediction, labeled_array, background_threshold) 
+    # GPU watershed, equivalent to skimage's watershed(-prediction, labeled_array, mask=...)
+    wts = seeded_watershed(prediction, labeled_array, background_threshold)
 
     # cell confidence exclusion
     slices = find_objects(wts)
