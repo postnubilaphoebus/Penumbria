@@ -54,12 +54,13 @@ pip install -r requirements.txt
 ### Step 1: Prepare Your Training Data
 
 First, you need to convert your raw images and label masks into heatmaps that the network will learn from.
+Put all of the files in one folder and call 1_prepare_training_data.py with the appropriate arguments.
 
 ```bash
 python 1_prepare_training_data.py \
   --base_path /path/to/your/data \
   --dataset_name zebrafish \
-  --output_path prepped_data
+  --minimum_foreground_label=1 # required due to different dataset conventions
 ```
 
 **Arguments:**
@@ -67,6 +68,8 @@ python 1_prepare_training_data.py \
 - `--dataset_name`: Name for your dataset
 - `--output_path`: Where to save the prepared data (default: "prepped_data")
 - `--img_filter`: String to identify image files (default: "img")
+- `--label_filter`: String to identify label files (default: "img")
+- `--minimum_foreground_label`: Int to designate the minimum foreground label (no default, required)
 - `--resizing_factors`: Optional resizing factors for anisotropic data (e.g., `--resizing_factors=7,1,1`)
 
 This script creates Euclidean distance transform heatmaps from your labels, which serve as training targets for the network.
