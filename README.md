@@ -236,7 +236,7 @@ Volumes are never loaded whole. The first time a `.tif` is used, it is converted
 - **Inference** reads overlapping windows, blends them with Euclidean feathering into disk-backed accumulators, and writes the heatmap as OME-Zarr plus an ImageJ-readable TIFF.
 - **Watershed** runs as one global GPU watershed when the volume fits in RAM, and as tiled GPU watershed with overlap checks otherwise. The GPU side has its own memory limits, described below.
 
-The OME-Zarr outputs open in Fiji/ImageJ with an OME-Zarr/NGFF reader. For cluster use, `1_train_and_infer.py` (training and inference) and `2_watershed_tune.py` (watershed tuning and labels) run the same pipeline as two stages sharing a `--run_id`.
+The OME-Zarr outputs open in Fiji/ImageJ with an OME-Zarr/NGFF reader.
 
 ### GPU Memory
 
@@ -257,6 +257,15 @@ Run the tests with `python -m pytest test_out_of_core.py test_model_options.py t
 2. **Train**: Run `2_segment.py` with your config file
 3. **Fine-tune**: After training completes, adjust postprocessing parameters on validation data
 4. **Segment**: Apply the model to your test images
+
+`2_segment.py` runs training, inference and watershed in one go. Splitting up the work can help, so there are two scripts that do the same in two stages:
+
+```bash
+python 1_train_and_infer.py --config config.yaml --run_id run1   # training and inference
+python 2_watershed_tune.py --config config.yaml --run_id run1    # watershed tuning and labels
+```
+
+Use the same config and `--run_id` for both.
 
 ## Questions?
 
