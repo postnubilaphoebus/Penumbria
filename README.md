@@ -82,44 +82,44 @@ The easiest way to train is using a configuration YAML file:
 python 2_segment.py --config config.yaml
 ```
 
-**Sample config.yaml:**
+**Sample config.yaml** (the mouse skull config, `dataset_configs/mouse_skull.yaml`):
 ```yaml
 training:
-  training_iterations: 6000
-  evaluation_interval: 20
+  training_iterations: 100000
+  evaluation_interval: 250
   in_channels: 1
   data_dimensionality: 3
   mixed_precision: true
-  dynamic_cropping: false
-  training_image_shape: [64, 64, 64]
-  val_indices: [0, 4]
+  dynamic_cropping: true
+  training_image_shape: [128, 128, 128]
+  val_indices: [0]
   verbosity_flag: true
   data_augmentation_types:
     - rotate
     - motion_blur
     - gaussian_noise
   mini_batch_size: 1
-  early_stopping_patience: 8000
-  training_folder: "datasets/zebrafish_euclid"
-  inference_folder: null
+  early_stopping_patience: 20000
+  training_folder: "./datasets/prepped_data_mouse_skull_resizing_1p00_1p00_1p00"
+  inference_folder: "./datasets/prepped_data_mouse_skull_resizing_1p00_1p00_1p00/test_image"
   inference_resolution_upsampling: null
 
 inference:
   test_time_augmentation: true
-  keep_size: [32, 32, 32]
-  step_size: [32, 32, 32]
-  inference_indices: [1]
+  keep_size: [64, 64, 64]
+  step_size: [64, 64, 64]
+  inference_indices: null
 
 postprocessing:
-  parameter_tuning: false
-  cell_prominence: 0.23
-  cell_confidence_minimum: 0.51
-  background_threshold: 0.06
+  parameter_tuning: true
+  cell_prominence: 0.4
+  cell_confidence_minimum: 0.5
+  background_threshold: 0.2
   minimum_cell_size: 9
-  gaussian_smoothing: true
+  gaussian_smoothing: false
   simple_thresholding: false
 
-# The following sections are auto-populated and generally don't need changes:
+# The label_transform section is auto-populated and generally doesn't need changes:
 label_transform:
   high_value: 20.0
   low_value: -20.0
@@ -127,6 +127,7 @@ label_transform:
   foreground_minimum: -2.0
   ignore_index: -100
 
+# The model section: see "Model Options" below for the last four lines
 model:
   optimizer: sgd
   learning_rate: 0.001
@@ -134,6 +135,9 @@ model:
   momentum: 0.9
   model_weights_path: "best_model.pth"
   use_sgg_layer: true # change to false if you run into out-of-memory errors
+  use_cell_hint: true # independent of use_sgg_layer
+  zernike_enabled: true # false removes the Zernike layer entirely
+  zernike_moments: [3, 4, 12] # ANSI/OSA Zernike indices, any subset of 0-36
 ```
 
 ## Configuration Guide
@@ -203,10 +207,49 @@ After training, you'll fine-tune these parameters on your validation set to opti
 
 **`label_transform` section**: These values are automatically set during data preparation and just read by the training script.
 
-**`model` section**: Only modify if you want to load a pretrained model using `load_pretrained: true` and specifying `model_weights_path`.
-However, if you run into CUDA out-of-memory errors, it is recommended to turn the SGG layer off, like so: `use_sgg_layer: false`
+**`model` section**: Modify it to load a pretrained model (`load_pretrained: true` and `model_weights_path`) or to change the architecture options described under Model Options.
+If you run into CUDA out-of-memory errors, it is recommended to turn the SGG layer off, like so: `use_sgg_layer: false`
 
 All other default parameters are highly optimized and rarely need adjustment.
+
+### Model Options
+
+The `model` section has four architecture options. They are independent, so every on/off combination is valid.
+Options missing from an older config default to `true` (and `[3, 4, 12]` for the moments).
+Each can also be set on the command line, e.g. `--no-use_cell_hint --zernike_moments 3 4 12 24`.
+Weights only fit a model built with the same options, so use the options you trained with when you set `load_pretrained: true`.
+
+**Zernike layer** (`zernike_enabled`, `zernike_moments`). Learns a phase correction of the input in the frequency domain, one coefficient per Zernike mode, which can absorb optical effects such as tilt, defocus and spherical aberration. In our experience it helps most with blob-like objects in larger volumes. The default moments `[3, 4, 12]` improved results on some datasets and had little to no drawbacks on others. You can pick other moments if you suspect they suit your data, but keep expectations modest: we would not expect more than about 2% on top. `zernike_enabled: false` removes the layer.
+
+**SGG layer** (`use_sgg_layer`). Scaled Geocaps samples features on fixed grids at several scales and only trusts a detection where the scales agree. This can stabilise performance, particularly for large cells that exceed the field of view. It costs the most GPU memory of the three, so switch it off first if you run out.
+
+**Cell hints** (`use_cell_hint`). In 20% of the training steps, the heatmap of one cell is added to the bottleneck as a prompt (nothing is given at inference). This enforces geometrically consistent bottleneck features, which can counterbalance the SGG layer, since SGG adds an extra input stream to the xLSTM.
+
+**Zernike indices.** `zernike_moments` takes ANSI/OSA indices `j` from 0 to 36 (`j = (n(n+2) + m) / 2` for radial order `n` and azimuthal frequency `m`). The modes are the classic 2-D Zernike polynomials with the radial coordinate replaced by the 3-D frequency radius `|k|` and the azimuth measured about the z axis. They are not the orthogonal 3-D Zernike ball basis. On the `kz = 0` plane they equal the textbook 2-D modes. `j = 1, 2, 3` are the linear tilts along y, x and z (`j = 3` deviates from ANSI, where it would be oblique astigmatism), `j = 4` is defocus, and `j = 12` and `j = 24` are the first and second spherical aberration. The default `[3, 4, 12]` is the original configuration.
+
+### Large Volumes (out-of-core I/O)
+
+Volumes are never loaded whole. The first time a `.tif` is used, it is converted once into a compressed, chunked OME-Zarr cache next to it (`.penumbria_zarr/`). The cache is resumable, and a new one is built if the source file changes. Everything afterwards reads only the small regions it needs:
+
+- **Normalisation** uses exact whole-volume percentiles (1% and 99.9%), computed once in bounded memory and cached. Every patch is normalised with the same statistics, never with its own.
+- **Training** samples random crops from the cache. Padding at the volume border is applied lazily to each crop.
+- **Inference** reads overlapping windows, blends them with Euclidean feathering into disk-backed accumulators, and writes the heatmap as OME-Zarr plus an ImageJ-readable TIFF.
+- **Watershed** runs as one global GPU watershed when the volume fits in RAM, and as tiled GPU watershed with overlap checks otherwise. The GPU side has its own memory limits, described below.
+
+The OME-Zarr outputs open in Fiji/ImageJ with an OME-Zarr/NGFF reader. For cluster use, `1_train_and_infer.py` (training and inference) and `2_watershed_tune.py` (watershed tuning and labels) run the same pipeline as two stages sharing a `--run_id`.
+
+### GPU Memory
+
+The GPU part of the postprocessing (the h-dome that finds the seeds, and the seeded watershed, in `gpu_patched.py`) uses at most 70% of the GPU memory that is free when it starts.
+
+- A volume that fits is processed in one piece by `gpu_morphology.py` and `gpu_watershed.py`, exactly as before.
+- A larger volume is cut into the fewest patches that fit. The result is identical, voxel for voxel, to the unpatched run, including where a cell or a plateau crosses a patch edge. Patches that no seed can reach are skipped. A patch without a seed of its own is not necessarily background: a cell from the neighbouring patch can reach into it.
+- How many voxels fit is measured, not assumed. The first time a volume does not trivially fit, `gpu_memory.py` finds the out-of-memory point of your GPU (about a minute, cached in `~/.penumbria/gpu_calibration.json`). The working patch size is 70% of that point, scaled to the memory free at run time. `python gpu_memory.py` shows the numbers and `--recalibrate` measures again.
+- If another program takes GPU memory during a run, the request of the affected patch is logged, the patch size is halved once, and the work is retried. If that fails too, the run stops with a `GpuOutOfMemoryError` instead of shrinking further.
+- Free memory is checked before every patch, because on Windows an allocation beyond the GPU's memory may succeed by spilling into system RAM, ten times slower, instead of failing.
+- The heat is kept in float32. `check_watershed_float16.py heatmap.tif` shows what float16 would change on your own heatmaps: about 20% less GPU memory and 1.5-2x faster, but on low-contrast heatmaps it moved the boundaries of some cells noticeably.
+
+Run the tests with `python -m pytest test_out_of_core.py test_model_options.py test_gpu_patches.py`.
 
 ## Typical Workflow
 
