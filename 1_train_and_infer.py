@@ -221,6 +221,10 @@ def main(seed):
     data_dimensionality = train_cfg['data_dimensionality']
     mixed_precision = train_cfg['mixed_precision']
     dynamic_cropping = train_cfg['dynamic_cropping']
+    # Without dynamic cropping the network is trained on whole images, each normalised on its own, so
+    # inference patches are normalised per patch as well. With dynamic cropping it is trained on crops of
+    # images that were normalised as a whole, so inference uses those whole-volume statistics.
+    patch_based_norm = not dynamic_cropping
     training_image_shape = train_cfg['training_image_shape']
     verbosity_flag = train_cfg['verbosity_flag']
     data_augmentation_types = train_cfg['data_augmentation_types']
@@ -303,7 +307,7 @@ def main(seed):
 
     else:
         inference_images, inference_filenames = load_inference_images(
-            inference_path, fileformat=".tif", normalize=True
+            inference_path, fileformat=".tif", normalize=not patch_based_norm
         )
         inference_target_shapes = [image.shape for image in inference_images]
         inference_indices = [-10000000, -20000000]
@@ -314,7 +318,7 @@ def main(seed):
         raise FileNotFoundError(f"No .tif or .tiff inference images found in {inference_path}")
     assert all(getattr(image, "normalization", None) is not None for image in images), \
            "training images must carry whole-volume normalisation statistics"
-    assert all(getattr(image, "normalization", None) is not None for image in inference_images), \
+    assert patch_based_norm or all(getattr(image, "normalization", None) is not None for image in inference_images), \
            "inference images must carry whole-volume normalisation statistics"
 
     mask_file_matrix = []
@@ -454,10 +458,6 @@ def main(seed):
     ####################################################################################################################
     ##################################### model inference ##############################################################
     ####################################################################################################################
-
-    # Never normalise individual crops: bright foreground-only crops would
-    # otherwise destroy the background statistics learned during training.
-    patch_based_norm = False
 
     print("beginning inference...")
     model.eval()

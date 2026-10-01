@@ -160,6 +160,7 @@ model:
 **`dynamic_cropping`**: Set to `true` when your images are larger than what fits in GPU memory
 - Maximum safe image size is ~128³ (192³ absolute maximum)
 - When enabled, the network samples random crops during training
+- It also decides how inference patches are normalised: with `true`, with whole-volume statistics; with `false`, each patch on its own
 
 **`training_image_shape`**: Size of image patches used during training
 - Keep at [64, 64, 64] or [128, 128, 128] for most cases
@@ -231,7 +232,7 @@ Weights only fit a model built with the same options, so use the options you tra
 
 Volumes are never loaded whole. The first time a `.tif` is used, it is converted once into a compressed, chunked OME-Zarr cache next to it (`.penumbria_zarr/`). The cache is resumable, and a new one is built if the source file changes. Everything afterwards reads only the small regions it needs:
 
-- **Normalisation** uses exact whole-volume percentiles (1% and 99.9%), computed once in bounded memory and cached. Every patch is normalised with the same statistics, never with its own.
+- **Normalisation** follows `dynamic_cropping`. With dynamic cropping, images are normalised with exact whole-volume percentiles (1% and 99.9%), computed once in bounded memory and cached, and every patch uses those statistics. Without it, the network is trained on whole images that are each normalised on their own, so inference normalises each patch on its own too.
 - **Training** samples random crops from the cache. Padding at the volume border is applied lazily to each crop.
 - **Inference** reads overlapping windows, blends them with Euclidean feathering into disk-backed accumulators, and writes the heatmap as OME-Zarr plus an ImageJ-readable TIFF.
 - **Watershed** runs as one global GPU watershed when the volume fits in RAM, and as tiled GPU watershed with overlap checks otherwise. The GPU side has its own memory limits, described below.

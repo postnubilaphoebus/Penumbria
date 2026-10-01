@@ -81,6 +81,31 @@ class OutOfCoreTests(unittest.TestCase):
                 self.assertEqual(imagej_tiff.series[0].dtype, np.dtype(np.float32))
                 self.assertTrue(np.allclose(imagej_tiff.asarray(), source, atol=2e-6))
 
+    def test_patch_based_normalisation_scales_each_patch_on_its_own(self):
+        rng = np.random.default_rng(1)
+        dark, bright = rng.random((8, 8, 8)), 10 + 5 * rng.random((8, 8, 8))
+        source = np.concatenate([dark, bright], axis=2).astype(np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "image.tif"
+            tifffile.imwrite(source_path, source, metadata={"axes": "ZYX"})
+            volume = open_cached_volume(source_path, normalize=False)
+
+            def infer(patch_based_norm):
+                outputs, _, _ = sliding_window_inference(
+                    IdentityModel(), [volume], False, None, None, torch.device("cpu"),
+                    0.0, 1.0, directory, ["tiles"], False,
+                    patch_based_norm=patch_based_norm, tta=False, image_dim=(8, 8, 8),
+                    keep_size=(8, 8, 8), step_size=(8, 8, 8), save_files=False,
+                )
+                return outputs[0][:]
+
+            expected = np.concatenate([preprocess_0_1(source[..., :8], 1.0, 99.9),
+                                       preprocess_0_1(source[..., 8:], 1.0, 99.9)], axis=2)
+            self.assertTrue(np.allclose(infer(True), expected, atol=2e-6))
+            unnormalised = infer(False)  # the identity model passes the raw values on, clipped to [0, 1]
+            self.assertTrue(np.allclose(unnormalised[..., :8], source[..., :8], atol=2e-6))
+            self.assertTrue((unnormalised[..., 8:] == 1.0).all())
+
     def test_imagej_label_dtype_preserves_ids(self):
         self.assertEqual(imagej_label_dtype(162), np.dtype(np.uint16))
         self.assertEqual(imagej_label_dtype(70_000), np.dtype(np.float32))

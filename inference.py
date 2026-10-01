@@ -7,6 +7,7 @@ import math
 from contextlib import nullcontext
 from scipy.ndimage import distance_transform_edt
 from numcodecs import Blosc
+from utils import preprocess_0_1
 from volume_io import (
     ChunkedVolume,
     create_ome_zarr,
@@ -72,15 +73,12 @@ def sliding_window_inference(model,
         raise ValueError("Out-of-core inference supports 3-D images only")
     if any(step_size[axis] > keep_size[axis] for axis in range(3)):
         raise ValueError("Each step size must be less than or equal to its keep size")
-    if patch_based_norm:
-        warnings.warn(
-            "Patch-based normalisation is disabled: all patches use cached whole-image clipping and normalisation statistics."
-        )
 
     output_directory = os.path.join(predicted_label_path, "preds")
     os.makedirs(output_directory, exist_ok=True)
     print(f"{'with' if tta else 'without'} test time augmentation (TTA)")
     print("with disk-backed OME-Zarr accumulation and Euclidean feathering")
+    print(f"{'with' if patch_based_norm else 'without'} patch based norm")
 
     outputs = []
     output_names = inference_filenames or [f"volume_{index}" for index in range(len(inference_images))]
@@ -119,6 +117,8 @@ def sliding_window_inference(model,
             patch_start = tuple(global_keep_start[axis] - pad[axis] for axis in range(3))
             patch_end = tuple(patch_start[axis] + image_dim[axis] for axis in range(3))
             patch = _read_reflected_box(image, patch_start, patch_end)
+            if patch_based_norm:
+                patch = preprocess_0_1(patch, low_clip=1.0, high_clip=99.9)
             if tta:
                 predicted_patch = _process_with_tta(
                     patch, model, device, get_autocast(mixed_precision), low_value, high_value
@@ -164,7 +164,7 @@ def sliding_window_inference(model,
         del group["_weights"]
         update_group_attributes(group, {
             "penumbria_complete": True,
-            "penumbria_global_normalization": True,
+            "penumbria_global_normalization": not patch_based_norm,
         })
         completed_output = ChunkedVolume(output_path)
         outputs.append(completed_output)
