@@ -188,7 +188,7 @@ After training, you'll fine-tune these parameters on your validation set to opti
 
 **`parameter_tuning`**: 
 - `false`: Use preset values below
-- `true`: Run automated parameter search on validation data (recommended)
+- `true`: Run automated parameter search on validation data (recommended). A validation image is tuned whole; only a very large one is tuned on windows around its cells
 
 **`cell_prominence`**: Controls seed detection sensitivity (corresponds to h-dome transform height)
 
@@ -247,6 +247,7 @@ The GPU part of the postprocessing (the h-dome that finds the seeds, and the see
 - A larger volume is cut into the fewest patches that fit. The result is identical, voxel for voxel, to the unpatched run, including where a cell or a plateau crosses a patch edge. Patches that no seed can reach are skipped. A patch without a seed of its own is not necessarily background: a cell from the neighbouring patch can reach into it.
 - How many voxels fit is measured, not assumed. The first time a volume does not trivially fit, `gpu_memory.py` finds the out-of-memory point of your GPU (about a minute, cached in `~/.penumbria/gpu_calibration.json`). The working patch size is 70% of that point, scaled to the memory free at run time. `python gpu_memory.py` shows the numbers and `--recalibrate` measures again.
 - If another program takes GPU memory during a run, the request of the affected patch is logged, the patch size is halved once, and the work is retried. If that fails too, the run stops with a `GpuOutOfMemoryError` instead of shrinking further.
+- A whole image below 2.5M voxels is flooded with skimage's watershed on the CPU, because the GPU has a fixed cost of about 0.1 s per call (`SKIMAGE_WATERSHED_BELOW_VOXELS` in `postprocess.py`). Tiles of large images always use the GPU.
 - Free memory is checked before every patch, because on Windows an allocation beyond the GPU's memory may succeed by spilling into system RAM, ten times slower, instead of failing.
 - The heat is kept in float32. `check_watershed_float16.py heatmap.tif` shows what float16 would change on your own heatmaps: about 20% less GPU memory and 1.5-2x faster, but on low-contrast heatmaps it moved the boundaries of some cells noticeably.
 

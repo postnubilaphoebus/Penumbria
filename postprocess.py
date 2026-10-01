@@ -4,6 +4,7 @@ from matching import matching
 import numba as nb
 from scipy.ndimage import sobel
 from gpu_patched import h_dome, seeded_watershed  # as gpu_morphology / gpu_watershed, within a GPU memory budget
+from skimage.segmentation import watershed
 import math
 import warnings
 import psutil
@@ -11,12 +12,19 @@ from pathlib import Path
 from numcodecs import Blosc
 from volume_io import (
     ChunkedVolume,
+    build_sampling_index,
     create_ome_zarr,
     create_zarr_array,
     iter_chunk_slices,
     update_group_attributes,
     write_zarr_region,
 )
+
+# Below this many voxels a whole image is flooded by skimage's watershed on the CPU instead of the GPU one,
+# which has a fixed cost of about 0.1 s per call. On the laptop GPU it was tested on (RTX 4050), skimage is
+# faster below roughly 0.7M voxels, the two tie up to about 1M, and the GPU wins above that.
+SKIMAGE_WATERSHED_BELOW_VOXELS = 2_500_000
+
 
 def gradient_symmetry_voting(image, r=5):
     gx = sobel(image, axis=0)
@@ -98,6 +106,7 @@ def watershed_inference(prediction,
                         simple_thresholding = False,
                         low_confidence_merging = False,
                         sym = False,
+                        skimage_below_voxels=SKIMAGE_WATERSHED_BELOW_VOXELS,
                         _smoothed_prediction=None,
                         _normalization_bounds=None):
     
@@ -142,9 +151,13 @@ def watershed_inference(prediction,
         labeled_array, _ = label(h_maxima_binary)
 
 
-    # GPU watershed, equivalent to skimage's watershed(-prediction, markers, mask=...)
+    # The GPU watershed is equivalent to skimage's watershed(-prediction, markers, mask=...), which is
+    # the faster one for a small whole image (tiles of a large image pass 0 and always use the GPU).
     del hdome_image, h_maxima_binary
-    wts = seeded_watershed(prediction, labeled_array, background_threshold)
+    if prediction.size < skimage_below_voxels:
+        wts = watershed(-prediction, labeled_array, mask=prediction > background_threshold)
+    else:
+        wts = seeded_watershed(prediction, labeled_array, background_threshold)
     del labeled_array
 
     # Exactly the original strict count/max-confidence tests, without several
@@ -411,6 +424,7 @@ def watershed_inference_chunked(
             simple_thresholding=simple_thresholding,
             low_confidence_merging=False,
             sym=False,
+            skimage_below_voxels=0,
             _smoothed_prediction=(_smoothed_region(prediction, expanded_region)
                                   if gaussian_smoothing else None),
             _normalization_bounds=normalization_bounds,
@@ -485,6 +499,39 @@ def watershed_inference_chunked(
         "penumbria_watershed_overlap_check": "passed",
     })
     return ChunkedVolume(output_path), int(next_label - 1)
+
+def prepare_tuning_patches(predictions, integer_labels, images, training_image_shape, max_patches_per_image=8):
+    """Validation regions for Optuna: prediction and labels cut from the same voxels, always inside the volume.
+
+    A validation image is tuned whole, as long as that is no more expensive than the windows would be.
+    Only a larger image gets windows, centred on cells where possible. They are shifted to stay inside the
+    volume: padding would put mirrored copies of the cells into the prediction and nothing into the
+    labels, and the objective counts those mirrored cells as false positives.
+    """
+    tuning_predictions, tuning_labels = [], []
+    tuning_shape = tuple(max(192, int(value) * 2) for value in training_image_shape)
+    for prediction, integer_label, image in zip(predictions, integer_labels, images):
+        window = tuple(min(prediction.shape[axis], tuning_shape[axis]) for axis in range(3))
+        if math.prod(prediction.shape) <= max_patches_per_image * math.prod(window):
+            starts = [(0, 0, 0)]
+            window = tuple(prediction.shape)
+        else:
+            centres = build_sampling_index(integer_label, image, training_image_shape).object_centres
+            if len(centres) == 0:
+                centres = np.asarray([np.asarray(prediction.shape) // 2])
+            if len(centres) > max_patches_per_image:
+                centres = centres[np.linspace(0, len(centres) - 1, max_patches_per_image, dtype=int)]
+            starts = list(dict.fromkeys(  # identical windows only once
+                tuple(int(np.clip(centre[axis] - window[axis] // 2, 0, prediction.shape[axis] - window[axis]))
+                      for axis in range(3))
+                for centre in centres
+            ))
+        for start in starts:
+            region = tuple(slice(start[axis], start[axis] + window[axis]) for axis in range(3))
+            tuning_predictions.append(prediction.read_region(region))
+            tuning_labels.append(integer_label.read_region(region))
+    return tuning_predictions, tuning_labels
+
 
 def objective(trial, img, target, padding_list_val, data_dimensionality):
     gaussian_smoothing = trial.suggest_categorical('gaussian_smoothing', [True, False])

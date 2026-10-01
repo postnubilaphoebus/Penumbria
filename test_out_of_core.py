@@ -1,13 +1,16 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
+import optuna
 import tifffile
 import torch
 
 from inference import sliding_window_inference
-from postprocess import watershed_inference_chunked
+import postprocess
+from postprocess import objective, prepare_tuning_patches, watershed_inference, watershed_inference_chunked
 from utils import preprocess_0_1
 from volume_io import (
     ChunkedVolume,
@@ -106,6 +109,69 @@ class OutOfCoreTests(unittest.TestCase):
             self.assertTrue(np.allclose(unnormalised[..., :8], source[..., :8], atol=2e-6))
             self.assertTrue((unnormalised[..., 8:] == 1.0).all())
 
+    def tuning_inputs(self, directory, labels):
+        """Cached prediction (a noisy heat map of the labels) and label volumes for prepare_tuning_patches."""
+        rng = np.random.default_rng(3)
+        prediction = (0.9 * (labels > 0) + 0.05 * rng.random(labels.shape)).astype(np.float32)
+        paths = {}
+        for name, array in (("prediction", prediction), ("labels", labels.astype(np.int32))):
+            paths[name] = Path(directory) / f"{name}.tif"
+            tifffile.imwrite(paths[name], array, metadata={"axes": "ZYX"})
+        heat = open_cached_volume(paths["prediction"], storage_dtype=np.float32)
+        integer = open_cached_volume(paths["labels"], storage_dtype=np.int32, read_dtype=np.int32, is_label=True)
+        return prediction, heat, integer
+
+    def test_tuning_windows_stay_inside_the_volume_and_match_the_labels(self):
+        labels = np.zeros((700, 12, 12), np.int32)  # more than 3 windows of 192 planes: windows are cheaper
+        for cell, z in enumerate((10, 350, 690), start=1):
+            labels[z - 2:z + 2, 4:8, 4:8] = cell
+        with tempfile.TemporaryDirectory() as directory:
+            prediction, heat, integer = self.tuning_inputs(directory, labels)
+            windows, window_labels = prepare_tuning_patches([heat], [integer], [heat], (4, 4, 4), max_patches_per_image=3)
+        self.assertEqual(len(windows), 3)  # one per cell, no two alike
+        for window, window_label in zip(windows, window_labels):
+            self.assertEqual(window.shape, (192, 12, 12))
+            start = next(z for z in range(700 - 192 + 1) if np.array_equal(prediction[z:z + 192], window))
+            self.assertTrue(np.array_equal(labels[start:start + 192], window_label))  # same voxels, no padding
+        self.assertEqual({int(c) for window_label in window_labels for c in np.unique(window_label)} - {0}, {1, 2, 3})
+
+    def test_a_volume_smaller_than_the_window_is_tuned_whole_and_scores_like_the_whole_image(self):
+        labels = np.zeros((24, 24, 24), np.int32)
+        for cell, (z, y, x) in enumerate([(3, 3, 3), (3, 14, 12), (13, 4, 14), (14, 15, 3)], start=1):
+            labels[z:z + 6, y:y + 6, x:x + 6] = cell
+        params = dict(gaussian_smoothing=False, h=0.3, bg=0.1, c=0.4, simple_thresholding=False)
+        with tempfile.TemporaryDirectory() as directory:
+            prediction, heat, integer = self.tuning_inputs(directory, labels)
+            windows, window_labels = prepare_tuning_patches([heat], [integer], [heat], (64, 64, 64))
+        self.assertEqual(len(windows), 1)
+        self.assertTrue(np.array_equal(windows[0], prediction) and np.array_equal(window_labels[0], labels))
+        trial = optuna.trial.FixedTrial(params)
+        whole = objective(trial, [prediction], [labels], [None], 3)
+        self.assertGreater(whole, 0.9)  # clean cells, so a good score ...
+        self.assertEqual(objective(trial, windows, window_labels, [None], 3), whole)  # ... and the same one
+
+    def test_an_image_is_tuned_whole_unless_the_windows_are_cheaper(self):
+        labels = np.zeros((230, 12, 12), np.int32)  # 230 planes: less than 8 windows of 192 planes
+        labels[100:104, 4:8, 4:8] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            prediction, heat, integer = self.tuning_inputs(directory, labels)
+            windows, window_labels = prepare_tuning_patches([heat], [integer], [heat], (4, 4, 4))
+        self.assertEqual(len(windows), 1)
+        self.assertTrue(np.array_equal(windows[0], prediction) and np.array_equal(window_labels[0], labels))
+
+    def test_small_images_use_skimage_and_give_the_gpu_result(self):
+        labels = np.zeros((24, 24, 24), np.int32)
+        for cell, (z, y, x) in enumerate([(3, 3, 3), (3, 14, 12), (13, 4, 14), (14, 15, 3)], start=1):
+            labels[z:z + 6, y:y + 6, x:x + 6] = cell
+        heat = (0.9 * (labels > 0)).astype(np.float32)
+        settings = dict(padding=None, h=0.3, cell_confidence_minimum=0.4, background_threshold=0.1,
+                        gaussian_smoothing=False)
+        with mock.patch.object(postprocess, "seeded_watershed", side_effect=AssertionError("GPU watershed used")):
+            small = watershed_inference(heat, **settings)  # 13,824 voxels: below the threshold
+        gpu = watershed_inference(heat, skimage_below_voxels=0, **settings)
+        self.assertEqual(int(small.max()), 4)
+        self.assertTrue(np.array_equal(small, gpu))
+
     def test_imagej_label_dtype_preserves_ids(self):
         self.assertEqual(imagej_label_dtype(162), np.dtype(np.uint16))
         self.assertEqual(imagej_label_dtype(70_000), np.dtype(np.float32))
@@ -122,18 +188,20 @@ class OutOfCoreTests(unittest.TestCase):
             prediction_path = Path(directory) / "prediction.ome.zarr"
             _, array = create_ome_zarr(prediction_path, prediction.shape, np.float32, overwrite=True)
             array[:] = prediction
-            labels, count = watershed_inference_chunked(
-                ChunkedVolume(prediction_path),
-                Path(directory) / "labels.ome.zarr",
-                minimum_cell_size=10,
-                h=0.6,
-                cell_confidence_minimum=0.7,
-                background_threshold=0.08,
-                gaussian_smoothing=False,
-                simple_thresholding=True,
-                tile_shape=(16, 24, 24),
-                halo=8,
-            )
+            with mock.patch.object(postprocess, "seeded_watershed", wraps=postprocess.seeded_watershed) as gpu:
+                labels, count = watershed_inference_chunked(
+                    ChunkedVolume(prediction_path),
+                    Path(directory) / "labels.ome.zarr",
+                    minimum_cell_size=10,
+                    h=0.6,
+                    cell_confidence_minimum=0.7,
+                    background_threshold=0.08,
+                    gaussian_smoothing=False,
+                    simple_thresholding=True,
+                    tile_shape=(16, 24, 24),
+                    halo=8,
+                )
+            gpu.assert_called()  # tiles are small, but they must all be flooded by the same (GPU) implementation
             self.assertEqual(count, 2)
             self.assertEqual(len(np.unique(labels[:])) - 1, 2)
 

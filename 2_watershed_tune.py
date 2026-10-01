@@ -9,35 +9,14 @@ import yaml
 from typing import Dict
 from datetime import datetime
 import optuna
-from postprocess import watershed_inference_auto, objective
+from postprocess import watershed_inference_auto, objective, prepare_tuning_patches
 from volume_io import (
     ChunkedVolume,
-    build_sampling_index,
     export_zarr_to_tiff,
     imagej_label_dtype,
     open_ome_zarr,
 )
 
-
-def prepare_tuning_patches(predictions, integer_labels, images, training_image_shape, max_patches_per_image=8):
-    """Select bounded representative validation regions for Optuna."""
-    tuning_predictions, tuning_labels = [], []
-    tuning_shape = tuple(max(192, int(value) * 2) for value in training_image_shape)
-    for prediction, integer_label, image in zip(predictions, integer_labels, images):
-        index = build_sampling_index(integer_label, image, training_image_shape)
-        centres = index.object_centres
-        if len(centres) == 0:
-            centres = np.asarray([np.asarray(prediction.shape) // 2])
-        if len(centres) > max_patches_per_image:
-            selected = np.linspace(0, len(centres) - 1, max_patches_per_image, dtype=int)
-            centres = centres[selected]
-        local_shape = tuple(min(prediction.shape[axis], tuning_shape[axis]) for axis in range(3))
-        for centre in centres:
-            tuning_predictions.append(prediction.read_patch(centre, local_shape, pad_mode="reflect"))
-            tuning_labels.append(integer_label.read_patch(
-                centre, local_shape, pad_mode="constant", constant_values=0
-            ))
-    return tuning_predictions, tuning_labels
 
 def load_config(config_path: str) -> Dict:
     """loads the yaml config file"""
