@@ -1,4 +1,6 @@
 import numpy as np
+from fractions import Fraction
+import json
 import os.path
 import torch
 import torch.nn.functional as F
@@ -7,15 +9,101 @@ import warnings
 import imageio.v3 as iio
 from scipy.ndimage import gaussian_filter
 import skimage
+import tifffile
+from volume_io import (
+    ChunkedVolume,
+    SUPPORTED_TIFF_SUFFIXES,
+    coerce_resizing_factors,
+    open_cached_volume,
+    parse_resizing_factors,
+    scaled_shape,
+)
 
-def load_inference_images(inference_path, fileformat='.tif'):
-    print("loading inference images...")
+
+def load_training_source_shapes(training_path, prepared_shapes, resizing_factors):
+    """Return exact pre-resize shapes, falling back for legacy prepared datasets."""
+    resizing_factors = coerce_resizing_factors(resizing_factors)
+    fallback = [scaled_shape(shape, resizing_factors, inverse=True) for shape in prepared_shapes]
+    manifest_path = os.path.join(training_path, "preparation_manifest.json")
+    if not os.path.isfile(manifest_path):
+        warnings.warn(
+            "Prepared-data manifest has no source shapes; output geometry is inferred from resizing factors"
+        )
+        return fallback
+
+    with open(manifest_path, "r", encoding="utf8") as manifest_file:
+        manifest = json.load(manifest_file)
+    pairs = sorted(manifest.get("pairs", []), key=lambda pair: pair.get("index", -1))
+    if len(pairs) != len(prepared_shapes):
+        warnings.warn(
+            "Prepared-data manifest does not match the loaded files; output geometry is inferred from resizing factors"
+        )
+        return fallback
+
+    if manifest.get("version", 1) < 2 or any(
+        "source_shape" not in pair or "prepared_shape" not in pair for pair in pairs
+    ):
+        base_path = manifest.get("base_path")
+        try:
+            recovered = []
+            for pair, prepared_shape in zip(pairs, prepared_shapes):
+                source_path = os.path.join(base_path, pair["image"])
+                if source_path.lower().endswith(".npy"):
+                    source_shape = np.load(source_path, mmap_mode="r").shape
+                else:
+                    with tifffile.TiffFile(source_path) as source_tiff:
+                        source_shape = source_tiff.series[0].shape
+                if len(source_shape) != len(prepared_shape) or any(
+                    abs(Fraction(int(prepared), 1) - int(source) * factor) > 1
+                    for source, prepared, factor in zip(
+                        source_shape, prepared_shape, resizing_factors
+                    )
+                ):
+                    raise ValueError("legacy source/prepared shapes do not match the recorded factors")
+                recovered.append(tuple(int(value) for value in source_shape))
+        except (KeyError, OSError, TypeError, ValueError):
+            warnings.warn(
+                "Legacy prepared-data geometry could not be verified; output geometry is inferred from resizing factors"
+            )
+            return fallback
+        warnings.warn("Recovered exact source shapes from the legacy preparation manifest")
+        return recovered
+
+    source_shapes = []
+    for pair, prepared_shape in zip(pairs, prepared_shapes):
+        recorded_prepared = tuple(int(value) for value in pair["prepared_shape"])
+        actual_prepared = tuple(int(value) for value in prepared_shape)
+        if recorded_prepared != actual_prepared:
+            raise ValueError(
+                f"Prepared shape for sample {pair['index']} changed: manifest records "
+                f"{recorded_prepared}, file has {actual_prepared}"
+            )
+        source_shapes.append(tuple(int(value) for value in pair["source_shape"]))
+    return source_shapes
+
+def load_inference_images(inference_path, fileformat='.tif', normalize=True):
+    """Open inference volumes lazily through their local OME-Zarr caches.
+
+    ``.tif`` and ``.tiff`` are treated equivalently because both occur in the
+    bundled dataset configurations.  Whole-volume normalisation statistics are
+    cached and applied to every patch by :class:`ChunkedVolume`.
+    """
+    print("loading inference image metadata...")
     images = []
     filenames = []
-    for filename in os.listdir(inference_path):
-        if filename.endswith(fileformat):
+    requested_suffixes = SUPPORTED_TIFF_SUFFIXES if fileformat in {'.tif', '.tiff'} else {fileformat.lower()}
+    cache_dir = os.path.join(inference_path, ".penumbria_zarr")
+    for filename in sorted(os.listdir(inference_path)):
+        if os.path.splitext(filename)[1].lower() in requested_suffixes:
             imagepath = os.path.join(inference_path, filename)
-            image = skimage.io.imread(imagepath)
+            image = open_cached_volume(
+                imagepath,
+                cache_dir=cache_dir,
+                storage_dtype=np.float32,
+                normalize=normalize,
+                low_percentile=1.0,
+                high_percentile=99.9,
+            )
             images.append(image)
             name_without_extension = os.path.splitext(filename)[0]
             filenames.append(name_without_extension)
@@ -353,7 +441,7 @@ def load_training_images_and_labels(training_path,
         labels (list): List of corresponding label arrays.
         integer_labels (list): List of corresponding integer label arrays (if found).
     """
-    print("Loading train images and labels...")
+    print("Loading train image and label metadata...")
     images = []
     labels = []
     integer_labels = []
@@ -365,8 +453,14 @@ def load_training_images_and_labels(training_path,
         match = re.search(r'\d+', f)
         return int(match.group()) if match else -1
 
+    def matches_format(filename, requested_format):
+        suffix = os.path.splitext(filename)[1].lower()
+        if requested_format.lower() in {".tif", ".tiff"}:
+            return suffix in SUPPORTED_TIFF_SUFFIXES
+        return suffix == requested_format.lower()
+
     image_files = sorted(
-        [f for f in files if f.endswith(image_format)
+        [f for f in files if matches_format(f, image_format)
         and "label" not in f.lower()
         and "mask" not in f.lower()
         and "integer" not in f.lower()
@@ -375,7 +469,7 @@ def load_training_images_and_labels(training_path,
     )
 
     label_files = sorted(
-        [f for f in files if f.endswith(label_format)
+        [f for f in files if matches_format(f, label_format)
         and ("label" in f.lower() or "mask" in f.lower())
         and "integer" not in f.lower()
         and re.search(r'\d+', f)],
@@ -383,7 +477,7 @@ def load_training_images_and_labels(training_path,
     )
 
     integer_label_files = sorted(
-        [f for f in files if (f.endswith(".npy") or f.endswith(".tif"))
+        [f for f in files if (f.lower().endswith(".npy") or os.path.splitext(f)[1].lower() in SUPPORTED_TIFF_SUFFIXES)
         and "integer" in f.lower()
         and re.search(r'\d+', f)],
         key=extract_number
@@ -393,12 +487,7 @@ def load_training_images_and_labels(training_path,
     resizing_file = resizing_file[0]
 
     with open(os.path.join(training_path, resizing_file), "r") as file:
-        resizing_factors = file.readline()
-        resizing_factors = resizing_factors.strip("[").strip("]")
-        resizing_factors = resizing_factors.split(",")
-        resizing_factors = [float(f) for f in resizing_factors]
-        print("rounding resizing factors to 2 decimal places...")
-        resizing_factors = [round(f, 2) for f in resizing_factors]
+        resizing_factors = parse_resizing_factors(file.readline())
 
     if len(image_files) == 0:
         raise FileNotFoundError("No images found, check naming conventions and folder contents")
@@ -416,16 +505,24 @@ def load_training_images_and_labels(training_path,
             imagepath = os.path.join(training_path, image_file)
             labelpath = os.path.join(training_path, label_file)
             
-            # Load the image and label
-            image = iio.imread(imagepath)
-            
-            if label_format == ".tif":
-                label = iio.imread(labelpath)
-            else:
-                label = np.load(labelpath)
-            
-            if label_to_int:
-                label = label.astype(int)
+            cache_dir = os.path.join(training_path, ".penumbria_zarr")
+            image = open_cached_volume(
+                imagepath,
+                cache_dir=cache_dir,
+                storage_dtype=np.float32,
+                normalize=True,
+                low_percentile=1.0,
+                high_percentile=99.9,
+            )
+
+            if label_format.lower() not in SUPPORTED_TIFF_SUFFIXES:
+                raise ValueError("Out-of-core training currently requires TIFF heat labels")
+            label = open_cached_volume(
+                labelpath,
+                cache_dir=cache_dir,
+                storage_dtype=np.float32,
+                read_dtype=np.int32 if label_to_int else np.float32,
+            )
             
             images.append(image)
             labels.append(label)
@@ -440,10 +537,15 @@ def load_training_images_and_labels(training_path,
             
             if matching_integer_file:
                 integer_labelpath = os.path.join(training_path, matching_integer_file)
-                try:
-                    integer_label = np.load(integer_labelpath).astype(int)
-                except:
-                    integer_label = iio.imread(integer_labelpath).astype(int)
+                if not matching_integer_file.lower().endswith((".tif", ".tiff")):
+                    raise ValueError("Out-of-core training currently requires TIFF integer labels")
+                integer_label = open_cached_volume(
+                    integer_labelpath,
+                    cache_dir=cache_dir,
+                    storage_dtype=np.int32,
+                    read_dtype=np.int32,
+                    is_label=True,
+                )
                 integer_labels.append(integer_label)
             else:
                 # If no matching integer label found, append None or empty array

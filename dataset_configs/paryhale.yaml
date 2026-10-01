@@ -11,7 +11,10 @@ model:
   load_pretrained: true
   momentum: 0.9
   model_weights_path: "best_model.pth"
-  use_sgg_layer: true # change to false if you run into out-of-memory errors
+  use_sgg_layer: true # multi-scale graph layer; set to false if you run into out-of-memory errors
+  use_cell_hint: true # cell-hint branch, independent of use_sgg_layer
+  zernike_enabled: true # false removes the Zernike phase layer entirely
+  zernike_moments: [3, 4, 12] # ANSI/OSA Zernike indices j, any subset of 0-36 (ignored if the layer is off)
 
 training:
   training_iterations: 100000

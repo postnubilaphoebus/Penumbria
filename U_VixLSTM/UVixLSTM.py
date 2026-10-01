@@ -154,14 +154,91 @@ class UniformSpectralDropout3d(nn.Module):
         dropout_mask[..., 0, 0, 0] = 1.0
         return X_freq * dropout_mask
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Zernike modes
+#
+# Convention (unchanged from the original three modes): ``j`` is the ANSI/OSA
+# single index, j = (n(n+2) + m) / 2 for radial order n and azimuthal frequency
+# m. The polynomials are the classic 2-D Zernike family (R_n^|m|(rho) times
+# cos/sin(|m| phi), no normalisation constants) promoted to a 3-D frequency grid
+# by using the 3-D radius rho = |k| as the radial coordinate. On the kz = 0
+# plane they are exactly the textbook 2-D modes. They are NOT the orthogonal 3-D
+# Zernike (Canterakis) ball basis, whose radial parts differ (e.g. 5r^2-3, not
+# 2r^2-1, for the isotropic n=2 mode); that would change what j=4 and j=12 mean.
+#
+# The azimuth is measured about the z axis (axis 0, the optical axis). Writing
+# rho^|m| cos(m phi) as Re[(kx + i ky)^|m|] keeps every mode a smooth polynomial,
+# so nothing blows up on the kz axis.
+#
+# One deliberate deviation from ANSI: j=3 is the axial (kz) tilt, as in the
+# paper, instead of oblique astigmatism. With j=1 -> ky and j=2 -> kx this gives
+# the three linear tilts, i.e. translations along y, x and z.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_ZERNIKE_INDEX = 36
+DEFAULT_ZERNIKE_MOMENTS = (3, 4, 12)
+AXIAL_TILT_INDEX = 3
+
+
+def ansi_index_to_order(j):
+    """ANSI/OSA index j -> (radial order n, azimuthal frequency m)."""
+    n = 0
+    while n * (n + 3) // 2 < j:  # the last index of order n is n(n+3)/2
+        n += 1
+    return n, 2 * j - n * (n + 2)
+
+
+def validate_zernike_indices(indices):
+    """Return the indices as a list of ints, or raise a ValueError naming the problem."""
+    indices = list(indices)
+    if not indices:
+        raise ValueError("zernike_moments must contain at least one index; "
+                         "set zernike_enabled: false to turn the layer off")
+    for j in indices:
+        if isinstance(j, bool) or not isinstance(j, int) or not 0 <= j <= MAX_ZERNIKE_INDEX:
+            raise ValueError(f"Zernike index must be an integer in [0, {MAX_ZERNIKE_INDEX}], got {j!r}")
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"zernike_moments contains duplicates: {indices}")
+    return indices
+
+
+def zernike_mode(j, kz, ky, kx):
+    """Zernike mode j evaluated on frequency coordinates (kz, ky, kx)."""
+    if j == AXIAL_TILT_INDEX:
+        return kz
+    n, m = ansi_index_to_order(j)
+    order = abs(m)
+    rho = torch.sqrt(kx ** 2 + ky ** 2 + kz ** 2)
+    # R_n^|m|(rho) / rho^|m|: a polynomial in rho^2 with no division involved.
+    radial = torch.zeros_like(rho)
+    for s in range((n - order) // 2 + 1):
+        coefficient = ((-1) ** s * math.factorial(n - s)
+                       / (math.factorial(s) * math.factorial((n + order) // 2 - s)
+                          * math.factorial((n - order) // 2 - s)))
+        radial = radial + coefficient * rho ** (n - 2 * s - order)
+    if m == 0:
+        return radial
+    harmonic = lateral_harmonic(order, ky, kx)
+    return radial * (harmonic.real if m > 0 else harmonic.imag)
+
+
+def lateral_harmonic(order, ky, kx):
+    """(kx + i ky)^order, i.e. rho^order * exp(i * order * phi)."""
+    z = torch.complex(kx, ky)
+    power = z
+    for _ in range(order - 1):
+        power = power * z
+    return power
+
+
 class GlobalZernikeConv3d(nn.Module):
-    def __init__(self, j_indices=[4, 12], dropout_p=0.2):
+    def __init__(self, j_indices=DEFAULT_ZERNIKE_MOMENTS, dropout_p=0.2):
         super().__init__()
-        self.j_indices = j_indices
+        self.j_indices = validate_zernike_indices(j_indices)
         self.dropout_p = dropout_p
         self.spectral_dropout = UniformSpectralDropout3d(p = dropout_p)
-        self.alphas = nn.Parameter(torch.zeros(len(j_indices)))
-        
+        self.alphas = nn.Parameter(torch.zeros(len(self.j_indices)))
+
     def forward(self, x):
         # 1. Real FFT to frequency domain
         # X_freq shape: [B, C, D, H, W//2 + 1]
@@ -186,23 +263,14 @@ class GlobalZernikeConv3d(nn.Module):
         x_freq = torch.fft.rfftfreq(W, device=device)
         
         Z, Y, X = torch.meshgrid(z_freq, y_freq, x_freq, indexing='ij')
-        R = torch.sqrt(X**2 + Y**2 + Z**2)
 
         constrained_alphas = torch.tanh(self.alphas) * 2.0
 
         total_phase = torch.zeros_like(X)
-        for idx, j in enumerate(self.j_indices):
-            F = self._get_zernike_mode(j, X, Y, Z, R)
-            total_phase += constrained_alphas[idx] * F
-            
-        return total_phase
+        for alpha, j in zip(constrained_alphas, self.j_indices):
+            total_phase = total_phase + alpha * zernike_mode(j, Z, Y, X)
 
-    def _get_zernike_mode(self, j, X, Y, Z, R):
-        if j == 0: return torch.ones_like(X)
-        if j == 3: return Z 
-        if j == 4: return 2*R**2 - 1 
-        if j == 12: return 6.*R**4 - 6.*R**2 + 1. 
-        return torch.zeros_like(X)
+        return total_phase
 
 class EncoderBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1, base_width=64):
@@ -240,6 +308,11 @@ class EncoderBottleneck(nn.Module):
         return x
 
 
+def token_dim(use_sgg_layer):
+    """Width of the xLSTM tokens: 256 encoder channels, plus 256 SGG channels when enabled."""
+    return 512 if use_sgg_layer else 256
+
+
 class Encoder(nn.Module):
     def __init__(self, img_dim, in_channels, out_channels,
                  depth=24,
@@ -249,12 +322,15 @@ class Encoder(nn.Module):
                  alternation="bidirectional",
                  drop_path_decay=False,
                  legacy_norm=False,
-                 use_sgg_layer = True):
+                 use_sgg_layer = True,
+                 zernike_enabled = True,
+                 zernike_moments = DEFAULT_ZERNIKE_MOMENTS):
         super().__init__()
 
         self.norm_type = "instance"
         self.activation = "mish"
-        self.zernike = GlobalZernikeConv3d(j_indices = [3, 4, 12])
+        self.zernike = (GlobalZernikeConv3d(j_indices = zernike_moments) if zernike_enabled
+                        else nn.Identity())
         self.conv1 = nn.Conv3d(in_channels, out_channels,
                                kernel_size=7, stride=2, padding=3,
                                bias=False)
@@ -298,7 +374,7 @@ class Encoder(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 ViLBlock(
-                    dim=512 if self.use_sgg_layer else 256,
+                    dim=token_dim(self.use_sgg_layer),
                     drop_path=dpr[i],
                     direction=directions[i],
                 )
@@ -309,7 +385,7 @@ class Encoder(nn.Module):
             self.legacy_norm = LayerNorm(dim, bias=False)
         else:
             self.legacy_norm = nn.Identity()
-        self.norm = nn.LayerNorm(512 if self.use_sgg_layer else 256, eps=1e-6)
+        self.norm = nn.LayerNorm(token_dim(self.use_sgg_layer), eps=1e-6)
 
         self.output_shape = ((img_dim // 16) // 2, dim)
 
@@ -450,22 +526,40 @@ class FRNConvDownsample3D_3Steps(nn.Module):
 
 
 class UVixLSTM(nn.Module):
+    """U-Net with an xLSTM bottleneck.
+
+    The three optional parts are independent of each other, any combination works:
+      use_sgg_layer:   multi-scale graph (SGG) branch next to the encoder.
+      use_cell_hint:   cell-hint prompt branch, fed with a heatmap of one marked cell.
+      zernike_enabled: Zernike phase layer on the input; zernike_moments picks its modes.
+    """
+
     def __init__(self, class_num, 
                      img_dim=96,
                      in_channels=1,
                      out_channels=64,
                      depth=12,
                      dim=256,
-                     use_sgg_layer = True):
+                     use_sgg_layer = True,
+                     use_cell_hint = True,
+                     zernike_enabled = True,
+                     zernike_moments = DEFAULT_ZERNIKE_MOMENTS):
         super().__init__()
         self.encoder = Encoder(img_dim, in_channels, out_channels,
-                                   depth, dim, use_sgg_layer = use_sgg_layer)
+                                   depth, dim, use_sgg_layer = use_sgg_layer,
+                                   zernike_enabled = zernike_enabled,
+                                   zernike_moments = zernike_moments)
         self.decoder = Decoder(out_channels, class_num, use_sgg_layer = use_sgg_layer)
-        if use_sgg_layer:
-            self.cell_clue_layer = FRNConvDownsample3D_3Steps(in_channels=1, mid_channels=64, out_channels=512)
+        self.use_cell_hint = use_cell_hint
+        if use_cell_hint:
+            # The hint is added to the xLSTM tokens, so it must match their width.
+            self.cell_clue_layer = FRNConvDownsample3D_3Steps(in_channels=1, mid_channels=64,
+                                                              out_channels=token_dim(use_sgg_layer))
 
     def forward(self, x, prompt = None):
         if prompt is not None:
+            if not self.use_cell_hint:
+                raise ValueError("A cell hint was passed, but the model was built with use_cell_hint=False")
             prompt = self.cell_clue_layer(prompt)
         x, x1, x2, x3 = self.encoder(x, prompt)
         x_main = self.decoder(x, x1, x2, x3)

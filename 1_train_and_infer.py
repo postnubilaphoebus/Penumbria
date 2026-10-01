@@ -1,98 +1,53 @@
 import torch
 import numpy as np
-import torch
 from utils import (
     load_inference_images,
     load_training_images_and_labels,
     load_training_source_shapes,
     preprocess_0_1,
 )
-import logging
 import os
 from train import train_model
 from inference import sliding_window_inference
-from postprocess import watershed_inference_auto, objective
 from skimage.transform import resize
 import warnings
-import os
 import tifffile
-import torch
 from typing import Dict
 import yaml
 import sys
 import copy
 import random
-from datetime import datetime
-import optuna
 import argparse
 from pathlib import Path
 from model_config import add_model_arguments, build_model, with_model_defaults
 from volume_io import (
-    ChunkedVolume,
-    build_sampling_index,
     export_zarr_to_tiff,
-    imagej_label_dtype,
     resize_volume_to_ome_zarr,
     scaled_shape,
     select_inference_resizing_factors,
 )
 
 
-def prepare_tuning_patches(predictions, integer_labels, images, training_image_shape, max_patches_per_image=8):
-    """Select bounded representative validation regions for Optuna."""
-    tuning_predictions, tuning_labels = [], []
-    tuning_shape = tuple(max(192, int(value) * 2) for value in training_image_shape)
-    for prediction, integer_label, image in zip(predictions, integer_labels, images):
-        index = build_sampling_index(integer_label, image, training_image_shape)
-        centres = index.object_centres
-        if len(centres) == 0:
-            centres = np.asarray([np.asarray(prediction.shape) // 2])
-        if len(centres) > max_patches_per_image:
-            selected = np.linspace(0, len(centres) - 1, max_patches_per_image, dtype=int)
-            centres = centres[selected]
-        local_shape = tuple(min(prediction.shape[axis], tuning_shape[axis]) for axis in range(3))
-        for centre in centres:
-            tuning_predictions.append(prediction.read_patch(centre, local_shape, pad_mode="reflect"))
-            tuning_labels.append(integer_label.read_patch(
-                centre, local_shape, pad_mode="constant", constant_values=0
-            ))
-    return tuning_predictions, tuning_labels
-
 def load_config(config_path: str) -> Dict:
-    """loads the yaml config file
-
-    Args:
-        config_path (str): _description_
-
-    Returns:
-        Dict: _description_
-    """
+    """loads the yaml config file"""
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
     return config
 
 def override_config(config, args):
-    """Apply CLI argument overrides to nested config dictionary
-    
-    Args:
-        config (dict): Nested configuration dictionary
-        args (Namespace): Parsed command-line arguments
-    
-    Returns:
-        dict: Configuration with CLI overrides applied
-    """
+    """Apply CLI argument overrides to nested config dictionary"""
     merged_config = copy.deepcopy(config)
-    
+
     for key, value in vars(args).items():
-        if value is None or key == 'config':
+        if value is None or key in ('config', 'run_id'):
             continue
-        
+
         # Find which section contains this key
         for section_name, section_content in merged_config.items():
             if isinstance(section_content, dict) and key in section_content:
                 merged_config[section_name][key] = value
                 break
-    
+
     return merged_config
 
 
@@ -103,15 +58,25 @@ def main(seed):
     ###################################################################################################################
 
     # You may load a specific yaml file using the -c argument
-    # For example: python 2_segment.py -c="./dataset_configs/zebrafish_confocal.yaml"
+    # For example: python 1_train_and_infer.py -c="./dataset_configs/zebrafish_confocal.yaml"
     # However, you may override those using command line arguments
+
+    # ───────────────────────────────────────────────────────────────
+    # set random seeds for reproducibility
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
     # ───────────────────────────────────────────────────────────────
     # program name
 
     parser = argparse.ArgumentParser(
         prog='Penumbria',
-        description='Heatmap neural network for cell segmentation'
+        description='Heatmap neural network for cell segmentation - training + inference'
     )
 
     # ───────────────────────────────────────────────────────────────
@@ -122,12 +87,12 @@ def main(seed):
         default = "default_config.yaml",
         help='Path to YAML configuration file'
     )
-    parser.add_argument(
-        '--seed',
-        type=int,
-        default=None,
-        help='Random seed for random/numpy/torch (overrides the seed passed to main())'
-    )
+
+    # ───────────────────────────────────────────────────────────────
+    # run identifier, so repeated runs in the same folder don't overwrite each other.
+    # Also pass this same value to 2_watershed_tune.py so it can find these outputs.
+    parser.add_argument('--run_id', type=str, default="",
+        help='Identifier appended to output filenames for this run (e.g. "run1")')
 
     # ───────────────────────────────────────────────────────────────
     # label_transform section
@@ -202,38 +167,13 @@ def main(seed):
         help='Indices of images to segment')
 
     # ───────────────────────────────────────────────────────────────
-    # postprocessing section
+    # postprocessing section (only 'parameter_tuning' is used here, to decide
+    # whether validation heatmaps need to be produced for 2_watershed_tune.py)
 
     parser.add_argument('--parameter_tuning', type=int,
-        help='whether to perform parameter tuning on validation data')
-    parser.add_argument('--cell_prominence', type=float,
-        help='Minimum prominence to detect a cell (watershed threshold)')
-    parser.add_argument('--cell_confidence_minimum', type=float,
-        help='Minimum heatmap confidence for cells')
-    parser.add_argument('--background_threshold', type=float,
-        help='Threshold for separating background from cells')
-    parser.add_argument('--minimum_cell_size', type=int,
-        help='Cells smaller than this (in pixels) will be removed')
-    parser.add_argument('--gaussian_smoothing', type=bool,
-        help='Apply Gaussian smoothing before segmentation')
-    parser.add_argument('--simple_thresholding', type=bool,
-        help='Use simple (non-learned) thresholding for segmentation')
+        help='whether parameter tuning will be performed downstream on validation data')
 
     args = parser.parse_args()
-    if args.seed is not None:
-        seed = args.seed
-
-    # ───────────────────────────────────────────────────────────────
-    # set random seeds for reproducibility (after CLI parsing so --seed can override)
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-    print(f"running with seed {seed}")
-
     args_dict = vars(args)
     config_path = args_dict.get("config")
     try:
@@ -254,6 +194,11 @@ def main(seed):
     train_cfg = merged_config['training']
     inference_cfg = merged_config['inference']
     post_cfg = merged_config['postprocessing']
+
+    # run identifier: appended to output filenames so repeated runs in the same
+    # output folder don't overwrite each other. Pass the same value to 2_watershed_tune.py.
+    run_id = args.run_id
+    tag = f"_{run_id}" if run_id else ""
 
     # Label transform
     high_value = label_cfg['high_value']
@@ -294,13 +239,7 @@ def main(seed):
     predicted_label_path = inference_path
     inference_indices = inference_cfg['inference_indices']
 
-    # Postprocessing
-    cell_prominence = post_cfg['cell_prominence']
-    cell_confidence_minimum = post_cfg['cell_confidence_minimum']
-    background_threshold = post_cfg['background_threshold']
-    minimum_cell_size = post_cfg['minimum_cell_size']
-    gaussian_smoothing = post_cfg['gaussian_smoothing']
-    simple_thresholding = post_cfg['simple_thresholding']
+    # Postprocessing (only used to decide whether to emit validation heatmaps)
     parameter_tuning = post_cfg['parameter_tuning']
 
     assert foreground_minimum >= background_maximum, "foreground value cannot be lower than any background"
@@ -323,11 +262,11 @@ def main(seed):
     if not all_same:
         raise ValueError(f"training image shape must be cube, currently: {train_shape_arr}.\
                          consider resampling your whole image in case of anisotropy.")
-    
+
     five_divided = train_shape_arr[0] // (2 ** 5)
     if five_divided * (2 ** 5) != train_shape_arr[0]:
         raise ValueError("training image shape must be divisible by 2^5 due to model choice (Uvixlstm)")
-    
+
     if train_shape_arr[0] > 192:
         warnings.warn(f"training image shape is large ({train_shape_arr[0]} cubed), this may give OOM errors.")
 
@@ -341,10 +280,10 @@ def main(seed):
     training_source_shapes = load_training_source_shapes(
         training_path, [image.shape for image in images], resizing_factors
     )
-    
+
     resizing_necessary = [1.0 != f for f in resizing_factors]
     resizing_necessary = np.array(resizing_necessary)
-    
+
     if np.any(resizing_necessary):
         print("resizing necessary")
         print("resizing factors:", resizing_factors)
@@ -411,7 +350,7 @@ def main(seed):
                 image, output_path, output_shape, order=3, is_label=False
             ))
         inference_images = resized_images
-        
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     labels_intensity = labels
 
@@ -466,7 +405,7 @@ def main(seed):
         loss_fn = torch.nn.MSELoss(reduction="none")
 
         if chosen_optimizer == "sgd":
-            optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, 
+            optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum,
                                                             nesterov=False, weight_decay=1e-4)
         elif chosen_optimizer == "adam":
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.9))
@@ -475,9 +414,9 @@ def main(seed):
         else:
             raise ValueError("unknown optimizer: {}".format(chosen_optimizer))
 
-        model = train_model(model, 
-                            optimizer, 
-                            loss_fn, 
+        model = train_model(model,
+                            optimizer,
+                            loss_fn,
                             input_images,
                             val_images,
                             train_labels_intensity,
@@ -526,9 +465,9 @@ def main(seed):
                                                                      inference_images,
                                                                      False,
                                                                      mask_file_matrix,
-                                                                     mask_filename_matrix, 
-                                                                     device, 
-                                                                     -5.0, 
+                                                                     mask_filename_matrix,
+                                                                     device,
+                                                                     -5.0,
                                                                      high_value,
                                                                      predicted_label_path,
                                                                      inference_filenames,
@@ -539,42 +478,41 @@ def main(seed):
                                                                      keep_size = keep_size,
                                                                      step_size = step_size)
 
-    if any(tuple(prediction.shape) != tuple(target_shape)
-           for prediction, target_shape in zip(model_prediction, inference_target_shapes)):
-        print("restoring predictions to exact source shapes...")
-        padding_list_inferece = [None] * len(model_prediction)
-        resized_predictions = []
-        for name, prediction, output_shape in zip(
-            inference_filenames, model_prediction, inference_target_shapes
-        ):
-            output_path = os.path.join(
-                predicted_label_path, "preds", f"{name}_inference_output_resized.ome.zarr"
-            )
-            resized_prediction = resize_volume_to_ome_zarr(
-                prediction, output_path, output_shape, order=3, is_label=False
-            )
-            resized_predictions.append(resized_prediction)
-            export_zarr_to_tiff(
-                resized_prediction,
-                os.path.join(predicted_label_path, "preds", f"{name}_inference_output_resized.tif"),
-                output_dtype=np.float32,
-            )
-        model_prediction = resized_predictions
-    
+    # Always resize to the exact source shape and export - 2_watershed_tune.py reads
+    # these "{name}_inference_output_resized" files back from disk.
+    print("restoring predictions to exact source shapes and saving heatmaps...")
+    resized_predictions = []
+    for name, prediction, output_shape in zip(
+        inference_filenames, model_prediction, inference_target_shapes
+    ):
+        output_path = os.path.join(
+            predicted_label_path, "preds", f"{name}_inference_output_resized{tag}.ome.zarr"
+        )
+        resized_prediction = resize_volume_to_ome_zarr(
+            prediction, output_path, output_shape, order=3, is_label=False
+        )
+        resized_predictions.append(resized_prediction)
+        export_zarr_to_tiff(
+            resized_prediction,
+            os.path.join(predicted_label_path, "preds", f"{name}_inference_output_resized{tag}.tif"),
+            output_dtype=np.float32,
+        )
+    model_prediction = resized_predictions
+
     ####################################################################################################################
-    ##################################### watershed tuning #############################################################
+    ##################################### validation heatmaps (for 2_watershed_tune.py) ################################
     ####################################################################################################################
 
     if parameter_tuning:
 
-        print("watershed tuning...")
+        print("producing validation heatmaps for watershed tuning...")
         val_heatmaps, __, padding_list_val = sliding_window_inference(model,
-                                                                      val_images_unpadded, 
+                                                                      val_images_unpadded,
                                                                       False,
                                                                       None,
-                                                                      None, 
-                                                                      device, 
-                                                                      -5.0, 
+                                                                      None,
+                                                                      device,
+                                                                      -5.0,
                                                                       high_value,
                                                                       predicted_label_path,
                                                                       None,
@@ -586,103 +524,26 @@ def main(seed):
                                                                       step_size = step_size,
                                                                       save_files = False)
         validation_target_shapes = [training_source_shapes[index] for index in val_indices]
-        if any(tuple(heatmap.shape) != tuple(target_shape)
-               for heatmap, target_shape in zip(val_heatmaps, validation_target_shapes)):
-            val_heatmaps = [resize_volume_to_ome_zarr(
-                heatmap,
-                os.path.join(predicted_label_path, "preds", f"validation_{i}_resized.ome.zarr"),
-                validation_target_shapes[i],
-                order=3,
-                is_label=False,
-            ) for i, heatmap in enumerate(val_heatmaps)]
-            padding_list_val = [None] * len(val_heatmaps)
-            val_labels_integer_unpadded = [resize_volume_to_ome_zarr(
-                labels_volume,
-                os.path.join(predicted_label_path, "preds", f"validation_{i}_labels_resized.ome.zarr"),
-                validation_target_shapes[i],
-                order=0,
-                is_label=True,
-            ) for i, labels_volume in enumerate(val_labels_integer_unpadded)]
+        # Always resize + export - 2_watershed_tune.py reads these back from disk.
+        val_heatmaps = [resize_volume_to_ome_zarr(
+            heatmap,
+            os.path.join(predicted_label_path, "preds", f"validation_{i}_resized{tag}.ome.zarr"),
+            validation_target_shapes[i],
+            order=3,
+            is_label=False,
+        ) for i, heatmap in enumerate(val_heatmaps)]
+        val_labels_integer_unpadded = [resize_volume_to_ome_zarr(
+            labels_volume,
+            os.path.join(predicted_label_path, "preds", f"validation_{i}_labels_resized{tag}.ome.zarr"),
+            validation_target_shapes[i],
+            order=0,
+            is_label=True,
+        ) for i, labels_volume in enumerate(val_labels_integer_unpadded)]
 
-        if any(isinstance(item, ChunkedVolume) for item in val_heatmaps):
-            print("parameter tuning uses representative out-of-core validation regions")
-            val_heatmaps, val_labels_integer_unpadded = prepare_tuning_patches(
-                val_heatmaps,
-                val_labels_integer_unpadded,
-                val_heatmaps,
-                training_image_shape,
-            )
-            padding_list_val = [None] * len(val_heatmaps)
-
-        study = optuna.create_study(direction='maximize')
-        study.optimize(lambda trial: objective(trial, 
-                                               val_heatmaps, 
-                                               val_labels_integer_unpadded, 
-                                               padding_list_val, 
-                                               data_dimensionality), n_trials=300)
-
-        besth = study.best_params['h']
-        best_cc = study.best_params['c']
-        best_bg = study.best_params['bg']
-        best_gaussian = study.best_params['gaussian_smoothing']
-        best_thresh = study.best_params['simple_thresholding']
-
-        print("best parameters: h = {}, c = {}, bg = {}, gaussian_smoothing = {}, simple_thresholding = {},".\
-              format(besth, 
-                     best_cc, 
-                     best_bg, 
-                     best_gaussian, 
-                     simple_thresholding))
-        
-        print(f"best map on validation set: {study.best_value:.5f}")
-                                                                                                                            
-
-    else:
-
-        besth = cell_prominence
-        best_cc = cell_confidence_minimum
-        best_bg = background_threshold
-        best_gaussian = gaussian_smoothing
-        best_thresh = simple_thresholding
-    
-    ###################################################################################################################
-    ##################################### watershed flooding ##########################################################
-    ###################################################################################################################
-
-    predicted_label_path = os.path.join(predicted_label_path, "preds")
-    if not os.path.exists(predicted_label_path):
-        os.makedirs(predicted_label_path)
-    
-    print("neural network done, starting watershed postprocessing...")
-    for inference_filename, prediction, padd in zip(inference_filenames, model_prediction, padding_list_inferece):
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        zarr_path = os.path.join(
-            predicted_label_path, f"{inference_filename}_labels_predicted_{timestamp}.ome.zarr"
-        )
-        wts, num_features = watershed_inference_auto(
-            prediction,
-            zarr_path,
-            minimum_cell_size=minimum_cell_size,
-            h=besth,
-            cell_confidence_minimum=best_cc,
-            background_threshold=best_bg,
-            gaussian_smoothing=best_gaussian,
-            simple_thresholding=best_thresh,
-        )
-
-        # OME-Zarr is the working output. Stream an exact, native ImageJ label
-        # stack as uint16, or float32 if more than 65535 labels are present.
-        filepath = os.path.join(predicted_label_path, f"{inference_filename}_labels_predicted_{timestamp}.tif")
-        export_zarr_to_tiff(wts, filepath, output_dtype=imagej_label_dtype(num_features))
-        print("file {filepath} saved, number of cells = {num_features}".format(filepath = filepath,
-                                                                               num_features = num_features))
-
-    print("done!")
+    print(f"done! heatmaps written to {os.path.join(predicted_label_path, 'preds')} (tag='{run_id}')")
+    print("run 2_watershed_tune.py with the same --config and --run_id to finish segmentation.")
 
 if __name__ == "__main__":
-    logging.basicConfig(format="%(message)s")
-    logging.getLogger("penumbria.gpu").setLevel(logging.INFO)  # GPU memory budget and patch plan
-    main(0)  # default seed; override with --seed on the command line
+    print("running with seed {}".format(1))
 
-
-
+    main(1)
