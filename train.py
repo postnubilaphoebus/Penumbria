@@ -6,6 +6,7 @@ from contextlib import nullcontext
 import numpy as np
 from scipy.ndimage import find_objects, gaussian_filter, minimum_filter, maximum_filter
 from tqdm import tqdm
+import copy
 
 import torch
 import torch.nn as nn
@@ -299,6 +300,17 @@ def train_model(model,
     cache_reuse_remaining = 0
     cache_reuse_steps = 24
 
+    best_val_loss = float("inf")
+    best_model_weights = None
+
+    def save_checkpoint(filename, model_state, val_loss, step):
+        checkpoint = {
+            "model_state_dict": model_state,
+            "val_loss": val_loss,
+            "training_iter": step,
+        }
+        torch.save(checkpoint, filename)
+
     for training_iter in tqdm(range(training_iterations)):
 
         if patience_counter >= early_stopping_patience:
@@ -563,24 +575,48 @@ def train_model(model,
 
 
             val_losses.append(np.mean(loss_sum))
-            if np.mean(loss_sum) < best_val_loss:
-                best_val_loss = np.mean(loss_sum)
+            if mean_val_loss < best_val_loss:
+                best_val_loss = mean_val_loss
                 patience_counter = 0
-                best_model = model
+                best_model_weights = copy.deepcopy(model.state_dict())
             else:
                 patience_counter += evaluation_interval
-            if training_iter >= checkpoint_10 and checkpoint_10_saved == False:
-                checkpoint_10_saved = True
-                torch.save(best_model.state_dict(), "checkpoint_10.pth")
-            if training_iter >= checkpoint_25 and checkpoint_25_saved == False:
-                checkpoint_25_saved = True
-                torch.save(best_model.state_dict(), "checkpoint_25.pth")
-            elif training_iter >= checkpoint_50 and checkpoint_50_saved == False:
-                checkpoint_50_saved = True
-                torch.save(best_model.state_dict(), "checkpoint_50.pth")
-            elif training_iter >= checkpoint_75 and checkpoint_75_saved == False:
-                checkpoint_75_saved = True
-                torch.save(best_model.state_dict(), "checkpoint_75.pth")
+            if best_model_weights is not None:
+                if training_iter >= checkpoint_10 and not checkpoint_10_saved:
+                    checkpoint_10_saved = True
+                    save_checkpoint(
+                        "checkpoint_10.pth",
+                        best_model_weights,
+                        best_val_loss,
+                        training_iter,
+                    )
+            
+                if training_iter >= checkpoint_25 and not checkpoint_25_saved:
+                    checkpoint_25_saved = True
+                    save_checkpoint(
+                        "checkpoint_25.pth",
+                        best_model_weights,
+                        best_val_loss,
+                        training_iter,
+                    )
+            
+                if training_iter >= checkpoint_50 and not checkpoint_50_saved:
+                    checkpoint_50_saved = True
+                    save_checkpoint(
+                        "checkpoint_50.pth",
+                        best_model_weights,
+                        best_val_loss,
+                        training_iter,
+                    )
+            
+                if training_iter >= checkpoint_75 and not checkpoint_75_saved:
+                    checkpoint_75_saved = True
+                    save_checkpoint(
+                        "checkpoint_75.pth",
+                        best_model_weights,
+                        best_val_loss,
+                        training_iter,
+                    )
             if device == 'cuda':
                 torch.cuda.empty_cache()
 
@@ -596,4 +632,7 @@ def train_model(model,
         for item in train_losses:
             file.write(f"{item}\n")
 
-    return best_model
+    if best_model_weights is not None:
+        model.load_state_dict(best_model_weights)
+
+    return model
