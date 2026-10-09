@@ -11,7 +11,7 @@ import logging
 import os
 from train import train_model
 from inference import sliding_window_inference
-from postprocess import watershed_inference_auto, objective, prepare_tuning_patches
+from postprocess import watershed_inference_auto, objective
 from skimage.transform import resize
 import warnings
 import os
@@ -28,7 +28,6 @@ import argparse
 from pathlib import Path
 from model_config import add_model_arguments, build_model, with_model_defaults
 from volume_io import (
-    ChunkedVolume,
     export_zarr_to_tiff,
     imagej_label_dtype,
     resize_volume_to_ome_zarr,
@@ -583,22 +582,30 @@ def main(seed):
                 is_label=True,
             ) for i, labels_volume in enumerate(val_labels_integer_unpadded)]
 
-        if any(isinstance(item, ChunkedVolume) for item in val_heatmaps):
-            print("parameter tuning uses representative out-of-core validation regions")
-            val_heatmaps, val_labels_integer_unpadded = prepare_tuning_patches(
-                val_heatmaps,
-                val_labels_integer_unpadded,
-                val_heatmaps,
-                training_image_shape,
-            )
-            padding_list_val = [None] * len(val_heatmaps)
-
+        # Every trial scores each COMPLETE validation volume against its complete ground truth, one score per
+        # volume, averaged with equal weight (postprocess.objective). The heatmaps above are computed once
+        # and reused by all trials; only the watershed parameters change between trials.
+        tuning_scratch = os.path.join(predicted_label_path, "preds", ".tuning_scratch")
+        validation_names = [f"validation_{i} (image index {index})" for i, index in enumerate(val_indices)]
         study = optuna.create_study(direction='maximize')
-        study.optimize(lambda trial: objective(trial, 
-                                               val_heatmaps, 
-                                               val_labels_integer_unpadded, 
-                                               padding_list_val, 
-                                               data_dimensionality), n_trials=300)
+        try:
+            study.optimize(lambda trial: objective(trial,
+                                                   val_heatmaps,
+                                                   val_labels_integer_unpadded,
+                                                   padding_list_val,
+                                                   data_dimensionality,
+                                                   volume_names=validation_names,
+                                                   scratch_dir=tuning_scratch), n_trials=300)
+        finally:
+            try:
+                os.rmdir(tuning_scratch)  # only if empty: every trial removes its own files
+            except OSError:
+                pass
+
+        approximate_volumes = study.best_trial.user_attrs.get("approximate_tiled_watershed_volumes")
+        if approximate_volumes:
+            print("note: the best trial used the approximate tiled watershed (not a global flood) for "
+                  f"{approximate_volumes}; the memory budget did not fit a global watershed of these volumes.")
 
         besth = study.best_params['h']
         best_cc = study.best_params['c']

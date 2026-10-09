@@ -188,7 +188,11 @@ After training, you'll fine-tune these parameters on your validation set to opti
 
 **`parameter_tuning`**: 
 - `false`: Use preset values below
-- `true`: Run automated parameter search on validation data (recommended). A validation image is tuned whole; only a very large one is tuned on windows around its cells
+- `true`: Run automated parameter search on validation data (recommended). Every trial scores each complete validation volume (see below)
+
+**How a tuning trial is scored.** The validation heatmaps are computed once and reused by all 300 Optuna trials; only the watershed parameters change. In each trial, every validation volume is flooded as a whole and the complete predicted instance-label volume is compared with the complete ground-truth volume through `matching.py`. That gives one score per volume, the mean over the IoU thresholds 0.1, 0.2, ..., 0.9 of `TP / (TP + FP + FN)` (0.5, 0.55, ..., 0.95 for 2-D data). The trial's value is the plain average of these volume scores, so every volume counts equally, whatever its size or number of cells. Nothing is cut into windows or tiles for scoring: all cells at the volume border and all background, where false positives can occur, are included. Volumes are scored one after the other, so only one is in memory at a time, which means a volume must fit in RAM together with its labels, as it must for the final watershed. A volume that cannot be scored (out of memory, mismatched shapes, ...) stops the search with an error naming the trial and the volume; it is never counted as a score of 0. Temporary full-volume watershed outputs go to `preds/.tuning_scratch/` and are deleted after each volume.
+
+The watershed inside a trial is the one used for the final segmentation (see Large Volumes), so a very large volume may be flooded with the approximate tiled watershed, which can differ from a global flood. The tiles are merged into one label volume before scoring, so cells crossing tile borders are still scored as complete cells. Such a run prints a warning, and the study records it in the trial's user attribute `approximate_tiled_watershed_volumes`.
 
 **`cell_prominence`**: Controls seed detection sensitivity (corresponds to h-dome transform height)
 
@@ -235,7 +239,7 @@ Volumes are never loaded whole. The first time a `.tif` is used, it is converted
 - **Normalisation** follows `dynamic_cropping`. With dynamic cropping, images are normalised with exact whole-volume percentiles (1% and 99.9%), computed once in bounded memory and cached, and every patch uses those statistics. Without it, the network is trained on whole images that are each normalised on their own, so inference normalises each patch on its own too.
 - **Training** samples random crops from the cache. Padding at the volume border is applied lazily to each crop.
 - **Inference** reads overlapping windows, blends them with Euclidean feathering into disk-backed accumulators, and writes the heatmap as OME-Zarr plus an ImageJ-readable TIFF.
-- **Watershed** runs as one global GPU watershed when the volume fits in RAM, and as tiled GPU watershed with overlap checks otherwise. The GPU side has its own memory limits, described below.
+- **Watershed** runs as one global GPU watershed when the volume fits in RAM, and as tiled GPU watershed with overlap checks otherwise. The GPU side has its own memory limits, described below. Parameter tuning uses the same watershed but always scores the complete, assembled label volume of each validation image.
 
 The OME-Zarr outputs open in Fiji/ImageJ with an OME-Zarr/NGFF reader.
 

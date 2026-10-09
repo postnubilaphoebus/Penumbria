@@ -6,13 +6,15 @@ from scipy.ndimage import sobel
 from gpu_patched import h_dome, seeded_watershed  # as gpu_morphology / gpu_watershed, within a GPU memory budget
 from skimage.segmentation import watershed
 import math
+import os
+import shutil
+import tempfile
 import warnings
 import psutil
 from pathlib import Path
 from numcodecs import Blosc
 from volume_io import (
     ChunkedVolume,
-    build_sampling_index,
     create_ome_zarr,
     create_zarr_array,
     iter_chunk_slices,
@@ -500,75 +502,144 @@ def watershed_inference_chunked(
     })
     return ChunkedVolume(output_path), int(next_label - 1)
 
-def prepare_tuning_patches(predictions, integer_labels, images, training_image_shape, max_patches_per_image=8):
-    """Validation regions for Optuna: prediction and labels cut from the same voxels, always inside the volume.
+class TuningScoreError(RuntimeError):
+    """A validation volume could not be scored in an Optuna trial.
 
-    A validation image is tuned whole, as long as that is no more expensive than the windows would be.
-    Only a larger image gets windows, centred on cells where possible. They are shifted to stay inside the
-    volume: padding would put mirrored copies of the cells into the prediction and nothing into the
-    labels, and the objective counts those mirrored cells as false positives.
+    The message names the trial and the validation volume; the original error is chained as ``__cause__``.
+    A failed volume is never turned into a score (least of all 0), because that would make the parameter
+    search optimise around the failure instead of reporting it.
     """
-    tuning_predictions, tuning_labels = [], []
-    tuning_shape = tuple(max(192, int(value) * 2) for value in training_image_shape)
-    for prediction, integer_label, image in zip(predictions, integer_labels, images):
-        window = tuple(min(prediction.shape[axis], tuning_shape[axis]) for axis in range(3))
-        if math.prod(prediction.shape) <= max_patches_per_image * math.prod(window):
-            starts = [(0, 0, 0)]
-            window = tuple(prediction.shape)
-        else:
-            centres = build_sampling_index(integer_label, image, training_image_shape).object_centres
-            if len(centres) == 0:
-                centres = np.asarray([np.asarray(prediction.shape) // 2])
-            if len(centres) > max_patches_per_image:
-                centres = centres[np.linspace(0, len(centres) - 1, max_patches_per_image, dtype=int)]
-            starts = list(dict.fromkeys(  # identical windows only once
-                tuple(int(np.clip(centre[axis] - window[axis] // 2, 0, prediction.shape[axis] - window[axis]))
-                      for axis in range(3))
-                for centre in centres
-            ))
-        for start in starts:
-            region = tuple(slice(start[axis], start[axis] + window[axis]) for axis in range(3))
-            tuning_predictions.append(prediction.read_region(region))
-            tuning_labels.append(integer_label.read_region(region))
-    return tuning_predictions, tuning_labels
 
 
-def objective(trial, img, target, padding_list_val, data_dimensionality):
+def tuning_iou_thresholds(data_dimensionality):
+    """IoU thresholds averaged by the tuning metric: 0.1 ... 0.9 for 3-D, 0.5 ... 0.95 otherwise."""
+    return np.arange(0.1, 1.0, 0.1) if data_dimensionality == 3 else np.arange(0.5, 1.0, 0.05)
+
+
+def score_complete_volume(ground_truth, prediction, thresholds):
+    """Mean instance-matching accuracy TP / (TP + FP + FN) over *thresholds* for ONE complete volume.
+
+    ``matching`` accepts all thresholds in one call and builds the label-overlap table once for them, which
+    gives exactly the per-threshold ``matching(ground_truth, prediction, t).accuracy`` values (the overlap
+    and IoU scores do not depend on the threshold) at a fraction of the cost.
+    """
+    total = 0
+    for stats in matching(ground_truth, prediction, thresholds):
+        total += stats.accuracy
+    return total / len(thresholds)
+
+
+def _read_complete_labels(volume):
+    """The whole ground-truth label volume as one in-memory array."""
+    if isinstance(volume, ChunkedVolume):
+        return volume.read_region(tuple(slice(0, size) for size in volume.shape))
+    return np.asarray(volume)
+
+
+def _predict_complete_labels(heatmap, padding, scratch_path, **settings):
+    """One complete predicted instance-label array for a complete validation heatmap.
+
+    A disk-backed heatmap goes through ``watershed_inference_auto`` exactly as the final segmentation does:
+    one global GPU watershed (with the exact internal GPU patching of ``gpu_patched``) when the RAM estimate
+    fits, otherwise the approximate tiled watershed, whose tiles are merged into globally consistent label
+    IDs on disk. Either way the labels returned here cover the whole volume. The temporary OME-Zarr output is
+    deleted before returning. Returns ``(labels, watershed_method)``.
+
+    An in-memory heatmap is flooded as one array by ``watershed_inference``, as before.
+    """
+    if not isinstance(heatmap, ChunkedVolume):
+        labels = watershed_inference(prediction=heatmap, padding=padding, **settings)
+        if not np.issubdtype(labels.dtype, np.integer):
+            # A constant heatmap has no foreground and comes back as float zeros: an empty segmentation.
+            if np.any(labels):
+                raise TypeError(f"watershed returned non-integer labels ({labels.dtype})")
+            labels = labels.astype(np.int32)
+        return labels, "in_memory"
+    if padding is not None and has_nonzero_elements(padding):
+        raise ValueError("disk-backed validation heatmaps are never padded, but padding was given")
+    try:
+        result, _ = watershed_inference_auto(heatmap, scratch_path, **settings)
+        method = result.group.attrs.get("penumbria_watershed_method", "unknown")
+        return _read_complete_labels(result), method
+    finally:
+        shutil.rmtree(scratch_path, ignore_errors=True)
+
+
+def objective(trial, img, target, padding_list_val, data_dimensionality, *, volume_names=None, scratch_dir=None):
+    """Optuna objective: mean over the validation volumes of one whole-volume score per volume.
+
+    Every trial floods each COMPLETE validation heatmap (``img``) with the trial's watershed parameters and
+    compares the complete predicted instance-label volume with the complete ground truth (``target``) through
+    ``matching.py``. Each volume yields one score (see ``score_complete_volume``) and the volumes are averaged
+    with equal weight, whatever their size or number of objects. Nothing is cut into windows or tiles for
+    scoring; tiling inside the watershed (see ``_predict_complete_labels``) never reaches the metric.
+
+    Volumes are scored one after the other and only the one being scored is held in memory (disk-backed
+    ones are re-read from disk by every trial). ``scratch_dir`` is where the temporary full-volume watershed
+    outputs of disk-backed heatmaps go (default: the system temporary directory); each trial uses its own
+    sub-directory, removed when the trial ends. Any failure raises ``TuningScoreError`` naming the trial
+    and the volume.
+    """
     gaussian_smoothing = trial.suggest_categorical('gaussian_smoothing', [True, False])
     h = trial.suggest_float('h', 0.15, 0.5, step=0.01)
     bg = trial.suggest_float('bg', 0.05, 0.25, step=0.01)
     c = trial.suggest_float('c', 0.2, 0.75, step=0.01)
     simple_thresholding = trial.suggest_categorical('simple_thresholding', [True, False])
-    sym = False
-    lcm = False
-    sum_acc = 0
-    map_vals = np.arange(0.1, 1.0, 0.1) if data_dimensionality == 3 else np.arange(0.5, 1.0, 0.05)
-    for im, ta, pa in zip(img, target, padding_list_val):
-        try:
-            pred = watershed_inference(
-                prediction=im,
-                padding = pa,
-                minimum_cell_size=9,
-                h=h,
-                cell_confidence_minimum=c,
-                background_threshold=bg,
-                gaussian_smoothing=gaussian_smoothing,
-                simple_thresholding=simple_thresholding,
-                low_confidence_merging=lcm,
-                sym=sym
-            )
-            mean_acc = 0
-            idx = 0
-            for val in map_vals:
-                stats_dict = matching(ta, pred, val)
-                mean_acc += stats_dict.accuracy
-                idx += 1
-            sum_acc += (mean_acc / idx)
-        except:
-            sum_acc += 0
-        
-    return sum_acc / len(img)
+    settings = dict(
+        minimum_cell_size=9,
+        h=h,
+        cell_confidence_minimum=c,
+        background_threshold=bg,
+        gaussian_smoothing=gaussian_smoothing,
+        simple_thresholding=simple_thresholding,
+    )
+    if not len(img) == len(target) == len(padding_list_val):
+        raise ValueError(
+            f"{len(img)} validation heatmaps, {len(target)} ground-truth volumes and "
+            f"{len(padding_list_val)} paddings must be given in equal numbers"
+        )
+    if len(img) == 0:
+        raise ValueError("Optuna trial needs at least one validation volume")
+    names = list(volume_names) if volume_names is not None else [f"volume {i}" for i in range(len(img))]
+    if len(names) != len(img):
+        raise ValueError(f"{len(names)} volume names for {len(img)} validation volumes")
+    thresholds = tuning_iou_thresholds(data_dimensionality)
+
+    if scratch_dir is not None:
+        Path(scratch_dir).mkdir(parents=True, exist_ok=True)
+    volume_scores = []
+    approximate_volumes = []
+    with tempfile.TemporaryDirectory(prefix=f"penumbria_tuning_trial{trial.number}_", dir=scratch_dir) as trial_dir:
+        for index, (heatmap, ground_truth, padding) in enumerate(zip(img, target, padding_list_val)):
+            where = f"Optuna trial {trial.number}, validation volume {index} ({names[index]})"
+            try:
+                if (padding is None or not has_nonzero_elements(padding)) \
+                        and tuple(heatmap.shape) != tuple(ground_truth.shape):
+                    raise ValueError(
+                        f"heatmap shape {tuple(heatmap.shape)} != ground-truth shape {tuple(ground_truth.shape)}"
+                    )
+                prediction, method = _predict_complete_labels(
+                    heatmap, padding, os.path.join(trial_dir, f"volume_{index}_labels.ome.zarr"), **settings
+                )
+                truth = _read_complete_labels(ground_truth)
+                if prediction.shape != truth.shape:
+                    raise ValueError(
+                        f"predicted label shape {prediction.shape} != ground-truth shape {truth.shape}"
+                    )
+                volume_scores.append(score_complete_volume(truth, prediction, thresholds))
+                if method == "tiled_gpu":
+                    approximate_volumes.append(names[index])
+                del prediction, truth
+            except Exception as error:
+                raise TuningScoreError(f"{where} failed: {type(error).__name__}: {error}") from error
+
+    if approximate_volumes:
+        # Not the same segmentation as a global flood: say so in the study, not only in a warning.
+        trial.set_user_attr("approximate_tiled_watershed_volumes", approximate_volumes)
+    total = 0
+    for score in volume_scores:
+        total += score
+    return total / len(volume_scores)
 
 if __name__ == "__main__":
     pass
-
