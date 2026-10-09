@@ -574,7 +574,8 @@ def train_model(model,
                             loss_sum.append(val_loss.item())
 
 
-            val_losses.append(np.mean(loss_sum))
+            mean_val_loss = float(np.mean(loss_sum))
+            val_losses.append(mean_val_loss)
             if mean_val_loss < best_val_loss:
                 best_val_loss = mean_val_loss
                 patience_counter = 0
