@@ -277,13 +277,16 @@ Use the same config and `--run_id` for both.
 
 If something isn't working or you need help understanding a parameter, feel free to open an issue!
 
-## Status
-
-This code is currently published for review only.
-See the LICENSE file for details.
-
-## Copyright
+## License
 
 Copyright © 2026 Max Planck Society. All rights reserved.
+Patent pending (European patent application No. EP26182185).
 
-We anticipate offering this software free of charge for academic, non-commercial research, subject to a forthcoming license agreement. Commercial and industrial use is expected to require a commercial license. Until the official licensing terms are released, all rights are reserved.
+Penumbria is free to use for academic, scientific, and educational purposes under the [Penumbria Academic and Educational License](LICENSE.md). In short:
+
+- **Allowed:** non-commercial research and teaching by individuals, universities, public and non-profit research institutions, and schools, including modifying the software and publishing your results.
+- **Not allowed without a separate license:** commercial use (including any use by a for-profit company), clinical use, and participation in competitions or challenges such as Kaggle.
+
+Commercial licenses are available from [Max Planck Innovation](https://www.max-planck-innovation.de) (info@max-planck-innovation.de).
+
+This summary is provided for convenience only and does not grant any rights. Your rights are determined solely by the full license in [LICENSE.md](LICENSE.md), which prevails in case of any difference.
