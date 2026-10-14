@@ -12,6 +12,7 @@ from .frn import FilterResponseNorm3d
 import os
 import math
 import torch.fft
+from U_VixLSTM.VisionLSTM import ViLLayer
 
 #SUPPORTED_EMBEDDING_TYPES = ("conv", "perceptron")
 # Get the parent directory of the current script
@@ -555,6 +556,24 @@ class UVixLSTM(nn.Module):
             # The hint is added to the xLSTM tokens, so it must match their width.
             self.cell_clue_layer = FRNConvDownsample3D_3Steps(in_channels=1, mid_channels=64,
                                                               out_channels=token_dim(use_sgg_layer))
+
+    @torch.no_grad()
+    def init_orthogonal_except_vil(self, module, gain=1.0):
+        if isinstance(module, ViLLayer):
+            return  # Skip this layer AND everything inside it.
+
+        if isinstance(module, (
+            nn.Linear,
+            nn.Conv1d, nn.Conv2d, nn.Conv3d,
+            nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d,
+        )):
+            nn.init.orthogonal_(module.weight, gain=gain)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+        for child in module.children():
+            self.init_orthogonal_except_vil(child, gain=gain)
+
 
     def forward(self, x, prompt = None):
         if prompt is not None:
