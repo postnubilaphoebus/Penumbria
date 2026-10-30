@@ -84,6 +84,24 @@ python 2_segment.py --config config.yaml
 
 **Sample config.yaml** (the mouse skull config, `dataset_configs/mouse_skull.yaml`):
 ```yaml
+label_transform:
+  high_value: 20.0
+  low_value: -20.0
+  background_maximum: -5.0
+  foreground_minimum: -2.0
+  ignore_index: -100
+
+model:
+  optimizer: sgd
+  learning_rate: 0.001
+  load_pretrained: false
+  momentum: 0.9
+  model_weights_path: "best_model.pth"
+  use_sgg_layer: false # multi-scale graph layer. you can play around with it and see if it improves things on your data, but results are not uniform
+  use_cell_hint: true # cell-hint branch, independent of use_sgg_layer
+  zernike_enabled: true # false removes the Zernike phase layer entirely
+  zernike_moments: [3, 4, 12] # ANSI/OSA Zernike indices j, any subset of 0-36 (ignored if the layer is off)
+
 training:
   training_iterations: 100000
   evaluation_interval: 250
@@ -105,7 +123,7 @@ training:
   inference_resolution_upsampling: null
 
 inference:
-  test_time_augmentation: true
+  test_time_augmentation: false # only turn to true if you really care about an extra tiny bit in boundary accuracy
   keep_size: [64, 64, 64]
   step_size: [64, 64, 64]
   inference_indices: null
@@ -118,26 +136,6 @@ postprocessing:
   minimum_cell_size: 9
   gaussian_smoothing: false
   simple_thresholding: false
-
-# The label_transform section is auto-populated and generally doesn't need changes:
-label_transform:
-  high_value: 20.0
-  low_value: -20.0
-  background_maximum: -5.0
-  foreground_minimum: -2.0
-  ignore_index: -100
-
-# The model section: see "Model Options" below for the last four lines
-model:
-  optimizer: sgd
-  learning_rate: 0.001
-  load_pretrained: false
-  momentum: 0.9
-  model_weights_path: "best_model.pth"
-  use_sgg_layer: true # change to false if you run into out-of-memory errors
-  use_cell_hint: true # independent of use_sgg_layer
-  zernike_enabled: true # false removes the Zernike layer entirely
-  zernike_moments: [3, 4, 12] # ANSI/OSA Zernike indices, any subset of 0-36
 ```
 
 ## Configuration Guide
@@ -172,9 +170,9 @@ model:
 ### Inference Parameters
 
 **`test_time_augmentation`**: 
-- `true`: Network makes predictions on multiple augmented versions and averages them (better accuracy, slower)
-- `false`: Single prediction pass (faster, slightly lower accuracy)
-- Recommendation: Keep `true` if using GPU and reasonable dataset sizes
+- `true`: Network makes predictions on multiple augmented versions and averages them. 
+- `false`: Single prediction pass (faster)
+- Recommendation: Keep `false`. `true` only works on some datasets when boundary accuracy is difficult to achieve under low SNR; defaulting to false is mostly fine
 
 **`keep_size` and `step_size`**: 
 - These control sliding window inference (how the network processes large images)
@@ -226,7 +224,7 @@ Weights only fit a model built with the same options, so use the options you tra
 
 **Zernike layer** (`zernike_enabled`, `zernike_moments`). Learns a phase correction of the input in the frequency domain, one coefficient per Zernike mode, which can absorb optical effects such as tilt, defocus and spherical aberration. In our experience it helps most with blob-like objects in larger volumes. The default moments `[3, 4, 12]` improved results on some datasets and had little to no drawbacks on others. You can pick other moments if you suspect they suit your data, but keep expectations modest: we would not expect more than about 2% on top. `zernike_enabled: false` removes the layer.
 
-**SGG layer** (`use_sgg_layer`). Scaled Geocaps samples features on fixed grids at several scales and only trusts a detection where the scales agree. This can stabilise performance, particularly for large cells that exceed the field of view. It costs the most GPU memory of the three, so switch it off first if you run out.
+**SGG layer** (`use_sgg_layer`). Scaled Geocaps samples features on fixed grids at several scales and only trusts a detection where the scales agree. This can stabilise performance on some datasets, particularly for large cells that exceed the field of view; however, results are mixed. It costs the most GPU memory of the three, so switch it off first if you run out.
 
 **Cell hints** (`use_cell_hint`). In 20% of the training steps, the heatmap of one cell is added to the bottleneck as a prompt (nothing is given at inference). This enforces geometrically consistent bottleneck features, which can counterbalance the SGG layer, since SGG adds an extra input stream to the xLSTM.
 
